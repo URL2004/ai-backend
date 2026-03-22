@@ -16,7 +16,7 @@ async function callClaude(prompt) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: MODEL, max_tokens: 8192, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: MODEL, max_tokens: 16000, messages: [{ role: 'user', content: prompt }] })
   });
   const data = await response.json();
   if (data.error) throw new Error(data.error.message);
@@ -80,7 +80,8 @@ GPTZero, Turnitin, Copyleaks 등 모든 AI 탐지기에서 30% 이하로 변환
 
 원문 핵심 내용 반드시 유지
 
-JSON만 응답: {"outputText":"변환된 글 전체","summary":"변환 요약 2~3문장","detail":"변환 포인트 설명"}`;
+반드시 아래 JSON 형식으로만 응답 (마크다운, 설명 없이):
+{"outputText":"변환된 글 전체","summary":"변환 요약 2~3문장","detail":"변환 포인트 설명"}`;
 }
 
 // 텍스트 분석
