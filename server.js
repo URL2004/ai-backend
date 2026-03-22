@@ -88,7 +88,7 @@ GPTZero, Turnitin, Copyleaks 등 모든 AI 탐지기에서 30% 이하로 변환
 app.post('/analyze', async (req, res) => {
   try {
     const { mode, text } = req.body;
-    if (!text || text.length < 20) return res.json({ error: '텍스트가 너무 짧습니다.' });
+    if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
     const prompt = mode === 'detect' ? getDetectPrompt(text) : getHumanizePrompt(text);
     const result = await callClaude(prompt);
     res.json({ ok: true, result });
