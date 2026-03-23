@@ -17,15 +17,18 @@ function cleanText(text) {
   return text
     .replace(/[\u200B-\u200D\uFEFF\u00AD\u034F\u061C\u180E\u2000-\u200F\u2028-\u202F\u205F-\u206F]/g, '')
     .replace(/\u00A0/g, ' ')
+    .replace(/[*#`~]/g, '')
     .replace(/\.([가-힣A-Za-z])/g, '. $1')
     .replace(/,([가-힣A-Za-z])/g, ', $1')
     .replace(/ {2,}/g, ' ')
     .trim();
 }
 
-async function callClaude(messages, tools) {
+async function callClaude(messages, tools, temperature, system) {
   const body = { model: MODEL, max_tokens: 8192, messages };
   if (tools) body.tools = tools;
+  if (temperature !== undefined) body.temperature = temperature;
+  if (system) body.system = system;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -189,4 +192,3 @@ app.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => console.log('서버 시작!'));
-
