@@ -5,7 +5,24 @@ const pdfParse = require('pdf-parse');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
-app.use(cors());
+
+// Origin 검증 - gpkorea.ai.kr에서 온 요청만 허용
+const allowedOrigins = [
+  'https://gpkorea.ai.kr',
+  'https://www.gpkorea.ai.kr',
+  'http://localhost:3000',
+  'http://127.0.0.1:5500'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('허용되지 않은 접근입니다.'));
+    }
+  }
+}));
 app.use(express.json({ limit: '10mb' }));
 
 // Rate Limiting - IP당 분당 10회, 하루 100회
