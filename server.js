@@ -5,6 +5,7 @@ const pdfParse = require('pdf-parse');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
+app.set('trust proxy', 1);
 
 // Origin 검증 - gpkorea.ai.kr에서 온 요청만 허용
 const allowedOrigins = [
@@ -24,6 +25,13 @@ app.use(cors({
   }
 }));
 app.use(express.json({ limit: '10mb' }));
+
+// IP 로깅
+app.use((req, res, next) => {
+  const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - IP: ${ip}`);
+  next();
+});
 
 // Rate Limiting - IP당 분당 10회, 하루 100회
 const limiter = rateLimit({
@@ -175,6 +183,8 @@ ${exampleSection}
 
 // AI 탐지
 app.post('/analyze', async (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  console.log(`[${new Date().toISOString()}] /analyze 요청 IP: ${ip}`);
   try {
     const { mode, text } = req.body;
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
@@ -210,6 +220,8 @@ app.post('/analyze', async (req, res) => {
 
 // PDF 분석
 app.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  console.log(`[${new Date().toISOString()}] /analyze-pdf 요청 IP: ${ip}`);
   try {
     if (!req.file) return res.json({ error: 'PDF 파일이 없습니다.' });
     const mode = req.body.mode || 'detect';
