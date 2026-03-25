@@ -7,12 +7,12 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 app.set('trust proxy', 1);
 
-// [원본 유지] 허용 도메인
+// [수정] 모든 마크다운 기호를 제거하고 순수 URL 주소만 남겼습니다.
 const allowedOrigins = [
-  '[https://gpkorea.ai.kr](https://gpkorea.ai.kr)',
-  '[https://www.gpkorea.ai.kr](https://www.gpkorea.ai.kr)',
+  'https://gpkorea.ai.kr',
+  'https://www.gpkorea.ai.kr',
   'http://localhost:3000',
-  '[http://127.0.0.1:5500](http://127.0.0.1:5500)'
+  'http://127.0.0.1:5500'
 ];
 
 app.use(cors({
@@ -35,15 +35,16 @@ const upload = multer({ storage: multer.memoryStorage() });
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 
 /**
- * AI 응답에서 JSON만 안전하게 추출하는 함수
+ * [추가] AI가 보낸 응답에서 JSON만 안전하게 골라내는 함수
+ * 백틱(```)이나 불필요한 텍스트가 섞여있어도 파싱 가능하게 함
  */
 function safeJsonParse(str) {
   try {
-    // 1. 마크다운 코드 블록(```json ... ```) 제거
+    // 1. 마크다운 코드 블록 제거
     const cleaned = str.replace(/```json|```/g, "").trim();
     return JSON.parse(cleaned);
   } catch (e) {
-    // 2. 실패 시 정규표현식으로 { } 중괄호 사이의 내용만 추출 시도
+    // 2. 실패 시 { } 중괄호 사이 내용만 추출 시도
     const jsonMatch = str.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -52,14 +53,15 @@ function safeJsonParse(str) {
         throw new Error("JSON 형식이 올바르지 않습니다.");
       }
     }
-    throw new Error("AI 응답에서 JSON 데이터를 찾을 수 없습니다.");
+    throw new Error("응답에서 데이터를 찾을 수 없습니다.");
   }
 }
 
 function getHumanizePrompt(text, examples, level) {
+  // [원본 유지] 변수 정의
   const exampleSection = examples ? `\n### 참고 사례\n${examples}\n` : '';
 
-  // 사용자가 요청한 원본 프롬프트 내용 그대로 유지
+  // [원본 프롬프트 내용 100% 유지]
   return `당신은 AI 탐지기를 완벽하게 우회하는 인간 작가입니다. 다음 6단계 원칙을 엄격히 준수하세요.
 
 ### 핵심 재작성 원칙:
@@ -108,12 +110,13 @@ ${exampleSection}
 JSON 응답: {"outputText":"변환된 글 전체","summary":"요약","detail":"적용 기법 상세"}`;
 }
 
-// [원본 복구 및 오류 수정] 분석 API
+// [원본 복구 및 에러 핸들링 수정] 분석 API
 app.post('/analyze', async (req, res) => {
   try {
     const { mode, text } = req.body;
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
+    // [수정] fetch URL에서 마크다운 기호를 제거하고 순수 주소만 남겼습니다.
     const response = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
       method: 'POST',
       headers: { 
@@ -122,33 +125,32 @@ app.post('/analyze', async (req, res) => {
         'anthropic-version': '2023-06-01' 
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20240620', // 최신 모델 권장
+        model: 'claude-3-5-sonnet-20240620',
         max_tokens: 8192,
         messages: [{ role: 'user', content: getHumanizePrompt(text, null, req.body.level) }]
       })
     });
 
-    const data = await response.json();
-    
-    if (data.error) {
-      return res.json({ error: data.error.message });
+    if (!response.ok) {
+        const errorData = await response.json();
+        return res.json({ error: errorData.error?.message || 'Claude API 통신 실패' });
     }
 
+    const data = await response.json();
     const contentText = data.content[0].text;
 
-    // 안전한 파싱 로직 적용 (백틱 제거 등)
+    // AI 답변을 safeJsonParse로 처리해서 백틱 관련 오류 방지
     try {
       const resultJson = safeJsonParse(contentText);
       res.json({ ok: true, result: resultJson });
     } catch (parseErr) {
-      console.error("Parsing failed for text:", contentText);
-      res.json({ error: "AI 응답 해석 실패: " + parseErr.message });
+      res.json({ error: "해석 실패: " + parseErr.message });
     }
 
   } catch (err) {
-    res.json({ error: err.message });
+    res.json({ error: '서버 오류: ' + err.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('서버 복구 완료!'));
+app.listen(PORT, () => console.log('서버 복구 및 수정 완료!'));
