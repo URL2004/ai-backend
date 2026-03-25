@@ -86,7 +86,7 @@ function getHumanizePrompt(text, examples, level) {
     - 위 단어들의 어미는 문장에 맞게 수정 가능함
 
 5. **자연스러운 추임새**
-    - "사실", "막상", "왜인지" "돌이켜보면" "어떤 면에서 보면" "새삼" "오히려" "어쩌면" "단순히" "결국"같은 표현 1~2개 삽입
+    - "사실", "막상", "왜인지" "돌이켜보면" "어떤 면에서 보면" "새삼" "오보는히려" "어쩌면" "단순히" "결국"같은 표현 1~2개 삽입
     - 문단 순서를 논리 흐름이 깨지지 않는 선에서 일부 변경
     
 6. **어휘 의도적 변경 + N-gram Break**
@@ -114,7 +114,7 @@ app.post('/analyze', async (req, res) => {
     const { mode, text } = req.body;
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
-    // [최종 수정] 마크다운 기호를 완전히 제거한 순수 URL 문자열입니다.
+    // [최종 수정] 마크다운 기호를 완전히 제거한 순수 URL 주소입니다.
     const response = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
       method: 'POST',
       headers: { 
