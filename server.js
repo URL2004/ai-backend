@@ -7,7 +7,6 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 app.set('trust proxy', 1);
 
-// 허용 도메인 - 순수 URL 주소만 유지
 const allowedOrigins = [
   'https://gpkorea.ai.kr',
   'https://www.gpkorea.ai.kr',
@@ -23,7 +22,6 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// Rate Limiting
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -34,17 +32,11 @@ app.use('/analyze', limiter);
 const upload = multer({ storage: multer.memoryStorage() });
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 
-/**
- * AI가 보낸 응답에서 JSON만 안전하게 골라내는 함수
- * 백틱(```)이나 불필요한 텍스트가 섞여있어도 파싱 가능하게 함
- */
 function safeJsonParse(str) {
   try {
-    // 1. 마크다운 코드 블록 제거
     const cleaned = str.replace(/```json|```/g, "").trim();
     return JSON.parse(cleaned);
   } catch (e) {
-    // 2. 실패 시 { } 중괄호 사이 내용만 추출 시도
     const jsonMatch = str.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -108,14 +100,12 @@ ${exampleSection}
 JSON 응답: {"outputText":"변환된 글 전체","summary":"요약","detail":"적용 기법 상세"}`;
 }
 
-// 분석 API
 app.post('/analyze', async (req, res) => {
   try {
     const { mode, text } = req.body;
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
-    // [최종 수정] 마크다운 기호를 완전히 제거한 순수 URL 주소입니다.
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json', 
@@ -130,14 +120,13 @@ app.post('/analyze', async (req, res) => {
     });
 
     if (!response.ok) {
-        const errorData = await response.json();
-        return res.json({ error: errorData.error?.message || 'Claude API 통신 실패' });
+      const errorData = await response.json();
+      return res.json({ error: errorData.error?.message || 'Claude API 통신 실패' });
     }
 
     const data = await response.json();
     const contentText = data.content[0].text;
 
-    // AI 답변을 safeJsonParse로 처리해서 백틱 관련 오류 방지
     try {
       const resultJson = safeJsonParse(contentText);
       res.json({ ok: true, result: resultJson });
