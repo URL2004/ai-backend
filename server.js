@@ -113,7 +113,7 @@ app.post('/analyze', async (req, res) => {
         'anthropic-version': '2023-06-01' 
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20240620',
+        model: 'claude-3-5-sonnet-20241022',
         max_tokens: 8192,
         messages: [{ role: 'user', content: getHumanizePrompt(text, null, req.body.level) }]
       })
