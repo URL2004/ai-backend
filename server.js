@@ -115,7 +115,7 @@ app.post('/analyze', async (req, res) => {
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
     // [최종 수정] 마크다운 기호를 완전히 제거한 순수 URL 주소입니다.
-    const response = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json', 
