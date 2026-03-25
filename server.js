@@ -7,7 +7,7 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 app.set('trust proxy', 1);
 
-// [수정] 모든 마크다운 기호를 제거하고 순수 URL 주소만 남겼습니다.
+// 허용 도메인 - 순수 URL 주소만 유지
 const allowedOrigins = [
   'https://gpkorea.ai.kr',
   'https://www.gpkorea.ai.kr',
@@ -23,7 +23,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// [원본 유지] Rate Limiting
+// Rate Limiting
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -35,7 +35,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 
 /**
- * [추가] AI가 보낸 응답에서 JSON만 안전하게 골라내는 함수
+ * AI가 보낸 응답에서 JSON만 안전하게 골라내는 함수
  * 백틱(```)이나 불필요한 텍스트가 섞여있어도 파싱 가능하게 함
  */
 function safeJsonParse(str) {
@@ -58,10 +58,8 @@ function safeJsonParse(str) {
 }
 
 function getHumanizePrompt(text, examples, level) {
-  // [원본 유지] 변수 정의
   const exampleSection = examples ? `\n### 참고 사례\n${examples}\n` : '';
 
-  // [원본 프롬프트 내용 100% 유지]
   return `당신은 AI 탐지기를 완벽하게 우회하는 인간 작가입니다. 다음 6단계 원칙을 엄격히 준수하세요.
 
 ### 핵심 재작성 원칙:
@@ -110,13 +108,13 @@ ${exampleSection}
 JSON 응답: {"outputText":"변환된 글 전체","summary":"요약","detail":"적용 기법 상세"}`;
 }
 
-// [원본 복구 및 에러 핸들링 수정] 분석 API
+// 분석 API
 app.post('/analyze', async (req, res) => {
   try {
     const { mode, text } = req.body;
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
-    // [중요 수정] 마크다운 기호가 포함되어 있던 URL 주소를 순수 문자열로 수정했습니다.
+    // [최종 수정] 마크다운 기호를 완전히 제거한 순수 URL 문자열입니다.
     const response = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
       method: 'POST',
       headers: { 
@@ -153,4 +151,4 @@ app.post('/analyze', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('서버 복구 및 수정 완료!'));
+app.listen(PORT, () => console.log('서버 수정 완료!'));
