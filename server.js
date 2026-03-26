@@ -7,7 +7,6 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 app.set('trust proxy', 1);
 
-// Origin 검증 - gpkorea.ai.kr에서 온 요청만 허용
 const allowedOrigins = [
   'https://gpkorea.ai.kr',
   'https://www.gpkorea.ai.kr',
@@ -26,16 +25,14 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// IP 로깅
 app.use((req, res, next) => {
   const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - IP: ${ip}`);
   next();
 });
 
-// Rate Limiting - IP당 분당 10회, 하루 100회
 const limiter = rateLimit({
-  windowMs: 60 * 1000, // 1분
+  windowMs: 60 * 1000,
   max: 10,
   message: { error: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.' },
   standardHeaders: true,
@@ -43,7 +40,7 @@ const limiter = rateLimit({
 });
 
 const dailyLimiter = rateLimit({
-  windowMs: 24 * 60 * 60 * 1000, // 24시간
+  windowMs: 24 * 60 * 60 * 1000,
   max: 100,
   message: { error: '일일 사용량을 초과했습니다. 내일 다시 시도해주세요.' },
 });
@@ -56,7 +53,6 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-20250514';
 
-// 제로폭 문자 및 마침표 띄어쓰기 정리
 function cleanText(text) {
   return text
     .replace(/[\u200B-\u200D\uFEFF\u00AD\u034F\u061C\u180E\u2000-\u200F\u2028-\u202F\u205F-\u206F]/g, '')
@@ -116,7 +112,11 @@ ${text}
 - 약간의 논리 비약이나 불완전한 문장
 - 구어체 표현 혼용
 
-판단 원칙: 복수의 명확한 AI 징후가 있을 때만 높은 확률. 애매하면 인간 쪽 (50 이하).
+판단 원칙:
+- 복수의 명확한 AI 징후가 있을 때만 높은 확률. 애매하면 인간 쪽 (30 이하).
+- 확률 숫자는 반드시 1~100 사이의 정수로 응답하되, 절대 5의 배수로 떨어지는 값을 사용하지 말 것.
+- 예시: 87, 43, 62, 29, 71, 38, 56, 17, 93 같은 세밀한 값으로 응답할 것.
+- 절대 금지: 80, 85, 90, 95, 100, 50, 60, 70, 75, 25, 30, 35, 40, 45 등 5의 배수
 
 JSON만 응답: {"probability":숫자,"summary":"핵심 판단 이유 1~2문장","detail":"상세 분석 300자 이상"}`;
 }
@@ -190,7 +190,6 @@ ${exampleSection}
 {"outputText":"변환된 글 전체","summary":"변환 요약 2문장","detail":"적용한 기법 상세"}`;
 }
 
-// AI 탐지
 app.post('/analyze', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   console.log(`[${new Date().toISOString()}] /analyze 요청 IP: ${ip}`);
@@ -204,7 +203,6 @@ app.post('/analyze', async (req, res) => {
       return res.json({ ok: true, result });
     }
 
-    // 휴머나이저 - 웹 검색으로 사례 먼저 수집
     let examples = null;
     try {
       const searchData = await callClaude(
@@ -213,9 +211,7 @@ app.post('/analyze', async (req, res) => {
       );
       const textContent = searchData.content.filter(c => c.type === 'text').map(c => c.text).join('');
       if (textContent.length > 50) examples = textContent.substring(0, 800);
-    } catch(e) {
-      // 검색 실패해도 계속 진행
-    }
+    } catch(e) {}
 
     const data = await callClaude([{ role: 'user', content: getHumanizePrompt(text, examples, req.body.level || 2) }]);
     const result = parseJSON(data.content[0].text);
@@ -227,7 +223,6 @@ app.post('/analyze', async (req, res) => {
   }
 });
 
-// PDF 분석
 app.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   console.log(`[${new Date().toISOString()}] /analyze-pdf 요청 IP: ${ip}`);
@@ -248,13 +243,11 @@ app.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   }
 });
 
-// 카카오 토큰으로 사용자 정보 가져오기
 app.post('/kakao-login', async (req, res) => {
   try {
     const { accessToken } = req.body;
     if (!accessToken) return res.json({ error: '토큰이 없습니다.' });
 
-    // 카카오 사용자 정보 가져오기
     const userRes = await fetch('https://kapi.kakao.com/v2/user/me', {
       headers: { 'Authorization': 'Bearer ' + accessToken }
     });
