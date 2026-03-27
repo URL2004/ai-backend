@@ -3,6 +3,8 @@ const cors = require('cors');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const rateLimit = require('express-rate-limit');
+// 1. dotenv 설정을 최상단에 추가 (이게 있어야 .env 파일을 읽습니다)
+require('dotenv').config(); 
 
 const app = express();
 app.set('trust proxy', 1);
@@ -258,7 +260,7 @@ app.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
 app.post('/kakao-login', async (req, res) => {
   try {
-    const { accessToken } = req.body;
+    const { accessToken } = req.body;   
     if (!accessToken) return res.json({ error: '토큰이 없습니다.' });
 
     const userRes = await fetch('https://kapi.kakao.com/v2/user/me', {
@@ -276,6 +278,38 @@ app.post('/kakao-login', async (req, res) => {
     res.json({ ok: true, kakaoId, nickname, email, photo });
   } catch(err) {
     res.json({ error: err.message });
+  }
+});
+
+
+
+// 토스 결제 승인 API 추가
+app.post('/confirm-payment', async (req, res) => {
+  const { paymentKey, orderId, amount } = req.body;
+  const secretKey = process.env.TOSS_SECRET_KEY;
+  const basicToken = Buffer.from(secretKey + ":").toString("base64");
+
+  try {
+    const response = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${basicToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ paymentKey, orderId, amount })
+    });
+
+    const result = await response.json();
+    if (response.ok) {
+      // 결제 성공 시 응답
+      res.json({ ok: true, data: result });
+    } else {
+      // 결제 실패 시 응답
+      res.status(response.status).json(result);
+   // ... (위의 결제 승인 코드들 생략)
+    }
+  } catch (err) {
+    res.status(500).json({ error: '결제 승인 중 서버 에러가 발생했습니다.' });
   }
 });
 
