@@ -322,10 +322,17 @@ app.post('/analyze', async (req, res) => {
     const { mode, text } = req.body;
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
+    // [185행 근처 수정]
     if (mode === 'detect') {
       const data = await callClaude([{ role: 'user', content: getDetectPrompt(text) }]);
       const result = parseJSON(data.content[0].text);
-      return res.json({ ok: true, result });
+      
+      // ★ 여기도 usage 추가!
+      return res.json({ 
+        ok: true, 
+        result, 
+        usage: data.usage 
+      });
     }
 
     let examples = null;
@@ -343,7 +350,13 @@ app.post('/analyze', async (req, res) => {
    const data = await callClaude([{ role: 'user', content: prompt }]);
     const result = parseJSON(data.content[0].text);
     if (result.outputText) result.outputText = cleanText(result.outputText);
-    res.json({ ok: true, result });
+    
+    // ★ 이 부분이 핵심입니다! usage를 추가하세요.
+    res.json({ 
+      ok: true, 
+      result, 
+      usage: data.usage 
+    });
 
   } catch (err) {
     res.json({ error: err.message });
@@ -364,7 +377,14 @@ app.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     const data = await callClaude([{ role: 'user', content: prompt }]);
     const result = parseJSON(data.content[0].text);
     if (result.outputText) result.outputText = cleanText(result.outputText);
-    res.json({ ok: true, result, extractedText: text.substring(0, 500) });
+    
+    // ★ 여기도 usage 추가!
+    res.json({ 
+      ok: true, 
+      result, 
+      usage: data.usage, 
+      extractedText: text.substring(0, 500) 
+    });
   } catch (err) {
     res.json({ error: err.message });
   }
