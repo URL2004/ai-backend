@@ -67,18 +67,54 @@ function cleanText(text) {
 }
 
 async function callClaude(messages, tools, temperature, system) {
-  const body = { model: MODEL, max_tokens: 8192, messages };
+  // 캐싱을 적용하고 싶은 메시지(주로 시스템 프롬프트나 긴 지문)에 태그를 붙입니다.
+  const updatedMessages = messages.map((msg, index) => {
+    // 마지막 메시지(유저 입력)에 캐시 태그를 붙여야 그 앞의 모든 내용이 저장됩니다.
+    if (index === messages.length - 1) {
+      return {
+        ...msg,
+        content: [
+          {
+            type: "text",
+            text: msg.content,
+            cache_control: { type: "ephemeral" } // ★ 이게 진짜 할인권입니다!
+          }
+        ]
+      };
+    }
+    return msg;
+  });
+
+  const body = { 
+    model: MODEL, 
+    max_tokens: 8192, 
+    messages: updatedMessages 
+  };
+  
   if (tools) body.tools = tools;
   if (temperature !== undefined) body.temperature = temperature;
   if (system) body.system = system;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+    headers: { 
+      'Content-Type': 'application/json', 
+      'x-api-key': API_KEY, 
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31' // ★ 베타 헤더 추가 필수!
+    },
     body: JSON.stringify(body)
   });
+
   const data = await response.json();
-  if (data.error) throw new Error(data.error.message);
+  
+  // 비용 리포트 로그는 동민님이 짠 그대로 유지 (아래 생략)
+  if (data.usage) {
+    console.log("-----------------------------------------");
+    console.log(`📊 비용 리포트: 읽기(할인) ${data.usage.cache_read_input_tokens || 0} / 생성(정가) ${data.usage.cache_creation_input_tokens || 0}`);
+    console.log("-----------------------------------------");
+  }
+
   return data;
 }
 
