@@ -435,7 +435,7 @@ app.post('/confirm-payment', async (req, res) => {
   const basicToken = Buffer.from(secretKey + ":").toString("base64");
 
   try {
-    // 2. 토스 결제 승인 요청
+    // 2. 토스 결제 승인 요청 (동민님이 주신 부분)
     const response = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
       method: 'POST',
       headers: {
@@ -445,34 +445,37 @@ app.post('/confirm-payment', async (req, res) => {
       body: JSON.stringify({ paymentKey, orderId, amount })
     });
 
-    const result = await response.json();
+    const result = await response.json(); // 토스 응답 받기
 
+    // 3. ✅ 여기서부터 '무적의 충전' 시작!
     if (response.ok) {
-      // 1. 이메일이 잘 왔는지 서버 로그에 찍어보기 (확인용)
-      console.log("받은 이메일:", customerEmail);
-      console.log("받은 크레딧:", credits);
+      console.log(`🔎 지급 시도: ${customerEmail}님께 ${credits}크레딧`);
 
+      // 이메일 없으면 입구컷
       if (!customerEmail || customerEmail === "undefined") {
-        console.log("❌ 이메일이 없어서 지급 불가!");
-        return res.status(400).json({ error: "유저 이메일 정보가 없습니다." });
+        console.log("❌ 에러: 이메일 정보 누락");
+        return res.status(400).json({ error: "유저 정보가 없습니다." });
       }
 
-      // 2. 무적의 'set' 방식 (문서 없어도 새로 생성!)
+      // 🔥 DB에 숫자 박기 (set + merge 방식)
       const userRef = db.collection('users').doc(customerEmail);
       await userRef.set({
         credits: admin.firestore.FieldValue.increment(parseInt(credits) || 100),
-        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        lastPayment: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      console.log(`✅ 성공: ${customerEmail}님께 ${credits}크레딧 지급 완료!`);
-      res.json({ ok: true, data: result });
+      console.log(`✅ 성공: ${customerEmail}님께 지급 완료!`);
+      res.json({ ok: true, message: "충전 성공" });
 
     } else {
+      console.log("❌ 토스 승인 거절:", result);
       res.status(response.status).json(result);
     }
   } catch (err) {
-    console.error("❌ 서버 에러 상세:", err); // 에러 원인을 로그에 찍어줍니다.
-    res.status(500).json({ error: '서버 에러 발생', details: err.message });
+    console.error("❌ 서버 에러:", err);
+    res.status(500).json({ error: '서버 에러 발생' });
   }
 });
+
+
 app.listen(process.env.PORT || 3000, () => console.log('서버 시작!'));
