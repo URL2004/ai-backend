@@ -448,20 +448,24 @@ app.post('/confirm-payment', async (req, res) => {
     const result = await response.json();
 
     if (response.ok) {
-      // 3. ✅ 결제 승인이 났으니 파이어베이스에 크레딧 적립!
+      // 3. ✅ 무적의 'set' 방식으로 변경 (문서가 없어도 새로 생성해서 지급!)
       const userRef = db.collection('users').doc(customerEmail);
-      await userRef.update({
-        credits: admin.firestore.FieldValue.increment(parseInt(credits))
-      });
+      
+      await userRef.set({
+        credits: admin.firestore.FieldValue.increment(parseInt(credits) || 100),
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp() // 언제 충전했는지 기록
+      }, { merge: true }); // <--- 이게 핵심! 기존 데이터는 두고 크레딧만 더함
 
-      console.log(`✅ 충전 완료: ${customerEmail}님께 ${credits}크레딧 지급`);
+      console.log(`✅ 충전 완료: ${customerEmail}님께 ${credits}크레딧 지급 완료!`);
       res.json({ ok: true, data: result });
+
     } else {
+      console.log("❌ 토스 승인 거절:", result);
       res.status(response.status).json(result);
     }
   } catch (err) {
-    res.status(500).json({ error: '서버 에러 발생' });
+    console.error("❌ 서버 에러 상세:", err); // 에러 원인을 로그에 찍어줍니다.
+    res.status(500).json({ error: '서버 에러 발생', details: err.message });
   }
 });
-
 app.listen(process.env.PORT || 3000, () => console.log('서버 시작!'));
