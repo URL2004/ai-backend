@@ -448,19 +448,26 @@ app.post('/confirm-payment', async (req, res) => {
     const result = await response.json();
 
     if (response.ok) {
-      // 3. ✅ 무적의 'set' 방식으로 변경 (문서가 없어도 새로 생성해서 지급!)
+      // 1. 이메일이 잘 왔는지 서버 로그에 찍어보기 (확인용)
+      console.log("받은 이메일:", customerEmail);
+      console.log("받은 크레딧:", credits);
+
+      if (!customerEmail || customerEmail === "undefined") {
+        console.log("❌ 이메일이 없어서 지급 불가!");
+        return res.status(400).json({ error: "유저 이메일 정보가 없습니다." });
+      }
+
+      // 2. 무적의 'set' 방식 (문서 없어도 새로 생성!)
       const userRef = db.collection('users').doc(customerEmail);
-      
       await userRef.set({
         credits: admin.firestore.FieldValue.increment(parseInt(credits) || 100),
-        lastUpdated: admin.firestore.FieldValue.serverTimestamp() // 언제 충전했는지 기록
-      }, { merge: true }); // <--- 이게 핵심! 기존 데이터는 두고 크레딧만 더함
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
 
-      console.log(`✅ 충전 완료: ${customerEmail}님께 ${credits}크레딧 지급 완료!`);
+      console.log(`✅ 성공: ${customerEmail}님께 ${credits}크레딧 지급 완료!`);
       res.json({ ok: true, data: result });
 
     } else {
-      console.log("❌ 토스 승인 거절:", result);
       res.status(response.status).json(result);
     }
   } catch (err) {
