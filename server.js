@@ -6,6 +6,17 @@ const rateLimit = require('express-rate-limit');
 // 1. dotenv 설정을 최상단에 추가 (이게 있어야 .env 파일을 읽습니다)
 require('dotenv').config(); 
 
+const admin = require('firebase-admin');
+
+// 렌더 환경변수에 파이어베이스 키를 넣었다면 이렇게 사용
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
+
 const app = express();
 app.set('trust proxy', 1);
 
@@ -415,13 +426,16 @@ app.post('/kakao-login', async (req, res) => {
 
 
 
-// 토스 결제 승인 API 추가
+// 토스 결제 승인 API 및 파이어베이스 크레딧 업데이트
 app.post('/confirm-payment', async (req, res) => {
-  const { paymentKey, orderId, amount } = req.body;
+  // 1. 프론트에서 보낸 정보를 여기서 꺼냅니다.
+  const { paymentKey, orderId, amount, customerEmail, credits } = req.body;
+  
   const secretKey = process.env.TOSS_SECRET_KEY;
   const basicToken = Buffer.from(secretKey + ":").toString("base64");
 
   try {
+    // 2. 토스 결제 승인 요청
     const response = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
       method: 'POST',
       headers: {
@@ -432,16 +446,21 @@ app.post('/confirm-payment', async (req, res) => {
     });
 
     const result = await response.json();
+
     if (response.ok) {
-      // 결제 성공 시 응답
+      // 3. ✅ 결제 승인이 났으니 파이어베이스에 크레딧 적립!
+      const userRef = db.collection('users').doc(customerEmail);
+      await userRef.update({
+        credits: admin.firestore.FieldValue.increment(parseInt(credits))
+      });
+
+      console.log(`✅ 충전 완료: ${customerEmail}님께 ${credits}크레딧 지급`);
       res.json({ ok: true, data: result });
     } else {
-      // 결제 실패 시 응답
       res.status(response.status).json(result);
-   // ... (위의 결제 승인 코드들 생략)
     }
   } catch (err) {
-    res.status(500).json({ error: '결제 승인 중 서버 에러가 발생했습니다.' });
+    res.status(500).json({ error: '서버 에러 발생' });
   }
 });
 
