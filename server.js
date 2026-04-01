@@ -426,49 +426,46 @@ app.post('/kakao-login', async (req, res) => {
 
 
 
-// 토스 결제 승인 API 및 파이어베이스 크레딧 업데이트
 app.post('/confirm-payment', async (req, res) => {
-  // 1. 프론트에서 보낸 정보를 여기서 꺼냅니다.
-  const { paymentKey, orderId, amount, customerEmail, credits } = req.body;
+  const { paymentKey, orderId, amount, customerEmail, uid } = req.body; // credits 제거
   
+  // ✅ 서버에서 금액 기준으로 크레딧 직접 계산
+  const CREDIT_MAP = { 1900: 100, 5700: 330, 9500: 600, 19000: 1300, 38000: 2700 };
+  const safeCredits = CREDIT_MAP[parseInt(amount)];
+  if (!safeCredits) {
+    return res.status(400).json({ error: "유효하지 않은 결제 금액입니다." });
+  }
+
   const secretKey = process.env.TOSS_SECRET_KEY;
   const basicToken = Buffer.from(secretKey + ":").toString("base64");
 
   try {
-    // 2. 토스 결제 승인 요청 (동민님이 주신 부분)
     const response = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
       method: 'POST',
-      headers: {
-        'Authorization': `Basic ${basicToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ paymentKey, orderId, amount })
+  headers: {
+    'Authorization': `Basic ${basicToken}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ paymentKey, orderId, amount })
     });
 
-    const result = await response.json(); // 토스 응답 받기
+    const result = await response.json();
 
-    // 3. ✅ 여기서부터 '무적의 충전' 시작!
     if (response.ok) {
-      console.log(`🔎 지급 시도: ${customerEmail}님께 ${credits}크레딧`);
-
-      // 이메일 없으면 입구컷
-      if (!customerEmail || customerEmail === "undefined") {
-        console.log("❌ 에러: 이메일 정보 누락");
-        return res.status(400).json({ error: "유저 정보가 없습니다." });
+      if (!uid || uid === "undefined") {
+        return res.status(400).json({ error: "유저 UID 정보가 없습니다." });
       }
 
-      // 🔥 DB에 숫자 박기 (set + merge 방식)
-      const userRef = db.collection('users').doc(customerEmail);
+      const userRef = db.collection('users').doc(uid);
       await userRef.set({
-        credits: admin.firestore.FieldValue.increment(parseInt(credits) || 100),
+        credits: admin.firestore.FieldValue.increment(safeCredits), // ✅ safeCredits 사용
         lastPayment: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      console.log(`✅ 성공: ${customerEmail}님께 지급 완료!`);
+      console.log(`✅ 성공: ${customerEmail}(${uid})님께 ${safeCredits}크레딧 지급 완료!`);
       res.json({ ok: true, message: "충전 성공" });
 
     } else {
-      console.log("❌ 토스 승인 거절:", result);
       res.status(response.status).json(result);
     }
   } catch (err) {
