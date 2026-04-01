@@ -452,11 +452,20 @@ app.post('/confirm-payment', async (req, res) => {
     const result = await response.json();
 
     if (response.ok) {
-      if (!uid || uid === "undefined") {
-        return res.status(400).json({ error: "유저 UID 정보가 없습니다." });
-      }
+  if (!uid || uid === "undefined") {
+    return res.status(400).json({ error: "유저 UID 정보가 없습니다." });
+  }
 
-      const userRef = db.collection('users').doc(uid);
+  // ✅ 중복 충전 방어
+  const orderRef = db.collection('orders').doc(orderId);
+  const orderSnap = await orderRef.get();
+  if (orderSnap.exists) {
+    console.log(`⚠️ 중복 요청 차단: ${orderId}`);
+    return res.status(400).json({ error: "이미 처리된 결제입니다." });
+  }
+  await orderRef.set({ uid, amount, safeCredits, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+
+  const userRef = db.collection('users').doc(uid);
       await userRef.set({
         credits: admin.firestore.FieldValue.increment(safeCredits), // ✅ safeCredits 사용
         lastPayment: admin.firestore.FieldValue.serverTimestamp()
