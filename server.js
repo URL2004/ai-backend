@@ -456,31 +456,40 @@ app.post('/confirm-payment', async (req, res) => {
     return res.status(400).json({ error: "유저 UID 정보가 없습니다." });
   }
 
-  // ✅ 중복 충전 방어
-  const orderRef = db.collection('orders').doc(orderId);
-  const orderSnap = await orderRef.get();
-  if (orderSnap.exists) {
-    console.log(`⚠️ 중복 요청 차단: ${orderId}`);
-    return res.status(400).json({ error: "이미 처리된 결제입니다." });
-  }
-  await orderRef.set({ uid, amount, safeCredits, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-
-  const userRef = db.collection('users').doc(uid);
-      await userRef.set({
-        credits: admin.firestore.FieldValue.increment(safeCredits), // ✅ safeCredits 사용
-        lastPayment: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-
-      console.log(`✅ 성공: ${customerEmail}(${uid})님께 ${safeCredits}크레딧 지급 완료!`);
-      res.json({ ok: true, message: "충전 성공" });
-
-    } else {
-      res.status(response.status).json(result);
+  // ✅ 중복 충전 방어 (atomic 처리)
+const orderRef = db.collection('orders').doc(orderId);
+try {
+  await db.runTransaction(async (transaction) => {
+    const orderSnap = await transaction.get(orderRef);
+    if (orderSnap.exists) {
+      throw new Error('이미 처리된 결제입니다.');
     }
-  } catch (err) {
-    console.error("❌ 서버 에러:", err);
-    res.status(500).json({ error: '서버 에러 발생' });
-  }
+    transaction.set(orderRef, { 
+      uid, amount, safeCredits, 
+      createdAt: admin.firestore.FieldValue.serverTimestamp() 
+    });
+  });
+} catch (e) {
+  console.log(`⚠️ 중복 요청 차단: ${orderId}`);
+  return res.status(400).json({ error: "이미 처리된 결제입니다." });
+}
+
+const userRef = db.collection('users').doc(uid);
+await userRef.set({
+  credits: admin.firestore.FieldValue.increment(safeCredits),
+  lastPayment: admin.firestore.FieldValue.serverTimestamp()
+}, { merge: true });
+
+console.log(`✅ 성공: ${customerEmail}(${uid})님께 ${safeCredits}크레딧 지급 완료!`);
+res.json({ ok: true, message: "충전 성공" });
+
+} else {
+  res.status(response.status).json(result);
+}
+} catch (err) {
+  console.error("❌ 서버 에러:", err);
+  res.status(500).json({ error: '서버 에러 발생' });
+}
 });
 
 
