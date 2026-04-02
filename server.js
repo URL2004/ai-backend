@@ -458,10 +458,25 @@ try {
 }
 
 const userRef = db.collection('users').doc(uid);
+
+// 현재 크레딧 조회
+const userSnap = await userRef.get();
+const before = userSnap.exists ? (userSnap.data().credits || 0) : 0;
+
 await userRef.set({
   credits: admin.firestore.FieldValue.increment(safeCredits),
   lastPayment: admin.firestore.FieldValue.serverTimestamp()
 }, { merge: true });
+
+// 충전 내역 기록
+await db.collection('users').doc(uid).collection('creditHistory').add({
+  type: 'charge',
+  used: 0,
+  amount: safeCredits,
+  remaining: before + safeCredits,
+  plan: null,
+  createdAt: admin.firestore.FieldValue.serverTimestamp()
+});
 
 console.log(`✅ 성공: ${customerEmail}(${uid})님께 ${safeCredits}크레딧 지급 완료!`);
 res.json({ ok: true, message: "충전 성공" });
