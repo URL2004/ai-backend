@@ -58,8 +58,8 @@ const dailyLimiter = rateLimit({
   message: { error: '일일 사용량을 초과했습니다. 내일 다시 시도해주세요.' },
 });
 
-app.use('/analyze', limiter, dailyLimiter);
-app.use('/analyze-pdf', limiter, dailyLimiter);
+app.use('/analyze', limiter);
+app.use('/analyze-pdf', limiter);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
