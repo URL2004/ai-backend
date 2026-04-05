@@ -54,7 +54,7 @@ const limiter = rateLimit({
 
 const dailyLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
-  max: 100,
+  max: 1000,
   message: { error: '일일 사용량을 초과했습니다. 내일 다시 시도해주세요.' },
 });
 
