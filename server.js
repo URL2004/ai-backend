@@ -63,6 +63,7 @@ app.use('/analyze-pdf', limiter);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+const exampleSection = '';
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-20250514';
 
@@ -204,7 +205,7 @@ const HUMAN_PROMPTS = {
    - 핵심 위주로 문장을 간결하게 작성
 ${exampleSection}
 ### 작업 지침:
-- 원문 핵심 의미 유지, 문장 구조와 단어 선택은 80% 이상 새롭게 변경
+- 원문 핵심 의미 유지, 문장 구조와 단어 선택은 80% 이상 새롭게 변경`,
   blog: ` ### 핵심 재작성 원칙:
 
 너는 블로그 글에서 AI 탐지를 완벽하게 우회하는 전문가다.
