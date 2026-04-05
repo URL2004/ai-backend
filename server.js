@@ -171,7 +171,7 @@ JSON만 응답: {"probability":숫자,"summary":"핵심 판단 이유 1~2문장"
 
 // 네가 짠 프롬프트 원문을 그대로 변수에 담기
 const HUMAN_PROMPTS = {
-   resume: ### 핵심 재작성 원칙:
+   resume: `### 핵심 재작성 원칙:
 
 1. 로그 확률 파쇄
    - AI가 예측하기 쉬운 정석적인 단어 조합을 피할 것
