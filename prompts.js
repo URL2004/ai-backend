@@ -1,13 +1,10 @@
 // [프롬프트] AI 탐지 프롬프트 + 휴머나이즈 프롬프트(자소서/블로그/논문/과제) 모음
+// ★ 캐싱 최적화: 고정 프롬프트는 system으로, 유저 텍스트는 user 메시지로 분리
 
 const exampleSection = '';
 
-// 네가 짠 프롬프트 원문을 그대로 변수에 담기
-function getDetectPrompt(text) {
-  return `당신은 AI가 작성한 글을 탐지하는 세계 최고 전문가입니다.
-
-[분석할 글]
-${text}
+// ★ 감지 시스템 프롬프트 (고정 → 캐싱됨)
+const DETECT_SYSTEM = `당신은 AI가 작성한 글을 탐지하는 세계 최고 전문가입니다.
 
 ## AI 작성 징후
 - 문장 길이가 균일하고 매끄러움
@@ -28,7 +25,6 @@ ${text}
 - 예시: 87, 43, 62, 29, 71, 38 같은 값 권장. 5의 배수도 허용하나 매번 같은 값 반복 금지.
 
 JSON만 응답: {"probability":숫자,"summary":"핵심 판단 이유 1~2문장","detail":"상세 분석 100자 이상"}`;
-}
 
 const HUMAN_PROMPTS = {
    resume: `### 핵심 재작성 원칙:
@@ -112,9 +108,7 @@ ${exampleSection}
 "본 연구는 ...에 그 목적이 있다. ...가 급증하는 추세이나, ...는 여전히 미미한 실정이다. 한편, ...는 ...에 기여할 것으로 사료되며, 이는 결국 ...로 귀결되는 것이다."
 
 # 작업 시작:
-입력된 아래 텍스트를 위 규칙에 따라 재작성하십시오.
-
-[입력 텍스트]: {userInput}`,
+입력된 아래 텍스트를 위 규칙에 따라 재작성하십시오.`,
 
   assignment: ` # Role: 당신은 전공 서적의 이론을 현실의 데이터나 기술적 한계와 연결 지어 분석하며, 교수님이 읽었을 때 "이 학생은 진짜 자기 머리로 고민했구나"라는 인상을 주는 **'우수 대학생'**입니다.
 
@@ -144,25 +138,13 @@ ${exampleSection}
 - 원문 문체(~이다/~했다/~습니다) 반드시 유지, 문체 변환 금지
 - "~거든요", "~잖아요" 같은 과도한 구어체 금지
 # 작업 시작:
-입력된 아래 텍스트를 위 규칙에 따라 재작성하십시오.
-[입력 텍스트]: {userInput}  `
+입력된 아래 텍스트를 위 규칙에 따라 재작성하십시오.`
 };
 
-function getPromptByMode(text, mode) {
+// ★ 휴머나이저 시스템 프롬프트 반환 (고정 부분만 → 캐싱됨)
+function getHumanizeSystem(mode) {
   const basePrompt = HUMAN_PROMPTS[mode] || HUMAN_PROMPTS['assignment'];
-
-  // {userInput} 플레이스홀더가 있으면 교체, 없으면 기존 방식으로 뒤에 붙이기
-  if (basePrompt.includes('{userInput}')) {
-    return basePrompt.replace('{userInput}', text) + '\n\n### 출력 형식 (반드시 아래 JSON으로만 응답):\n{"outputText":"변환된 글 전체","summary":"변환 요약 2문장","detail":"적용한 기법 상세"}';
-  }
-
-  return `${basePrompt}
-
-### 재작성할 텍스트:
-"${text}"
-
-### 출력 형식 (반드시 아래 JSON으로만 응답):
-{"outputText":"변환된 글 전체","summary":"변환 요약 2문장","detail":"적용한 기법 상세"}`;
+  return basePrompt + '\n\n### 출력 형식 (반드시 아래 JSON으로만 응답):\n{"outputText":"변환된 글 전체","summary":"변환 요약 2문장","detail":"적용한 기법 상세"}';
 }
 
-module.exports = { getDetectPrompt, getPromptByMode };
+module.exports = { DETECT_SYSTEM, getHumanizeSystem };

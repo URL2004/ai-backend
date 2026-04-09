@@ -1,9 +1,10 @@
 // [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리 + Claude API 호출 유틸
+// ★ 캐싱 최적화: 고정 프롬프트를 system에 넣어 cache_control 적용
 
 const express = require('express');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
-const { getDetectPrompt, getPromptByMode } = require('../prompts');
+const { DETECT_SYSTEM, getHumanizeSystem } = require('../prompts');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -25,33 +26,25 @@ function cleanText(text) {
 }
 
 async function callClaude(messages, tools, temperature, system) {
-  // 캐싱을 적용하고 싶은 메시지(주로 시스템 프롬프트나 긴 지문)에 태그를 붙입니다.
-  const updatedMessages = messages.map((msg, index) => {
-    // 마지막 메시지(유저 입력)에 캐시 태그를 붙여야 그 앞의 모든 내용이 저장됩니다.
-    if (index === messages.length - 1) {
-      return {
-        ...msg,
-        content: [
-          {
-            type: "text",
-            text: msg.content,
-            cache_control: { type: "ephemeral" } // ★ 이게 진짜 할인권입니다!
-          }
-        ]
-      };
-    }
-    return msg;
-  });
-
   const body = {
     model: MODEL,
     max_tokens: 8192,
-    messages: updatedMessages
+    messages: messages
   };
 
   if (tools) body.tools = tools;
   if (temperature !== undefined) body.temperature = temperature;
-  if (system) body.system = system;
+
+  // ★ 시스템 프롬프트에 cache_control 적용 (고정 프롬프트가 캐싱됨)
+  if (system) {
+    body.system = [
+      {
+        type: "text",
+        text: system,
+        cache_control: { type: "ephemeral" }
+      }
+    ];
+  }
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -59,17 +52,16 @@ async function callClaude(messages, tools, temperature, system) {
       'Content-Type': 'application/json',
       'x-api-key': API_KEY,
       'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'prompt-caching-2024-07-31' // ★ 베타 헤더 추가 필수!
+      'anthropic-beta': 'prompt-caching-2024-07-31'
     },
     body: JSON.stringify(body)
   });
 
   const data = await response.json();
 
-  // 비용 리포트 로그는 동민님이 짠 그대로 유지
   if (data.usage) {
     console.log("-----------------------------------------");
-    console.log(`📊 비용 리포트: 읽기(할인) ${data.usage.cache_read_input_tokens || 0} / 생성(정가) ${data.usage.cache_creation_input_tokens || 0}`);
+    console.log(`📊 비용 리포트: 캐시읽기(90%할인) ${data.usage.cache_read_input_tokens || 0} / 캐시생성(25%추가) ${data.usage.cache_creation_input_tokens || 0} / 일반입력 ${data.usage.input_tokens || 0}`);
     console.log("-----------------------------------------");
   }
 
@@ -98,17 +90,18 @@ router.post('/analyze', async (req, res) => {
     const { mode, text } = req.body;
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
+    // ★ 감지: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
     if (mode === 'detect') {
-      const data = await callClaude([{ role: 'user', content: getDetectPrompt(text) }]);
+      const data = await callClaude(
+        [{ role: 'user', content: `[분석할 글]\n${text}` }],
+        null, undefined,
+        DETECT_SYSTEM
+      );
       const result = parseJSON(data.content[0].text);
-
-      return res.json({
-        ok: true,
-        result,
-        usage: data.usage
-      });
+      return res.json({ ok: true, result, usage: data.usage });
     }
 
+    // 웹 검색 (캐싱 불필요)
     let examples = null;
     try {
       const searchData = await callClaude(
@@ -119,17 +112,18 @@ router.post('/analyze', async (req, res) => {
       if (textContent.length > 50) examples = textContent.substring(0, 800);
     } catch(e) {}
 
-   const selectedMode = req.body.humanizeMode || 'assignment'; // 값이 없으면 과제로 고정
-   const prompt = getPromptByMode(text, selectedMode);
-   const data = await callClaude([{ role: 'user', content: prompt }]);
+    // ★ 휴머나이저: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
+    const selectedMode = req.body.humanizeMode || 'assignment';
+    const humanizeSystem = getHumanizeSystem(selectedMode);
+    const data = await callClaude(
+      [{ role: 'user', content: `[재작성할 텍스트]\n${text}` }],
+      null, undefined,
+      humanizeSystem
+    );
     const result = parseJSON(data.content[0].text);
     if (result.outputText) result.outputText = cleanText(result.outputText);
 
-    res.json({
-      ok: true,
-      result,
-      usage: data.usage
-    });
+    res.json({ ok: true, result, usage: data.usage });
 
   } catch (err) {
     res.json({ error: err.message });
@@ -146,8 +140,13 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     const text = pdfData.text.trim();
     if (!text || text.length < 5) return res.json({ error: 'PDF에서 텍스트를 추출할 수 없습니다.' });
 
-    const prompt = mode === 'detect' ? getDetectPrompt(text) : getPromptByMode(text, req.body.humanizeMode);
-    const data = await callClaude([{ role: 'user', content: prompt }]);
+    const systemPrompt = mode === 'detect' ? DETECT_SYSTEM : getHumanizeSystem(req.body.humanizeMode || 'assignment');
+    const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
+    const data = await callClaude(
+      [{ role: 'user', content: userContent }],
+      null, undefined,
+      systemPrompt
+    );
     const result = parseJSON(data.content[0].text);
     if (result.outputText) result.outputText = cleanText(result.outputText);
 
