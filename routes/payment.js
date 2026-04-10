@@ -247,4 +247,61 @@ router.post('/approve-refund', async (req, res) => {
   }
 });
 
+// --- 친구 추천 ---
+router.post('/apply-referral', async (req, res) => {
+  try {
+    const { idToken, refCode } = req.body;
+    if (!idToken || !refCode) return res.status(400).json({ error: '필수 값 누락' });
+
+    // 1. 신규 유저 인증 확인
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const newUid = decoded.uid;
+
+    // 2. 자기 자신 추천 방지
+    const newUserSnap = await db.collection('users').doc(newUid).get();
+    if (!newUserSnap.exists) return res.status(400).json({ error: '유저 없음' });
+    if (newUserSnap.data().refCode === refCode) return res.status(400).json({ error: '본인 추천 불가' });
+
+    // 3. 이미 추천 받은 유저인지 확인
+    if (newUserSnap.data().referredBy) return res.status(400).json({ error: '이미 추천 적용됨' });
+
+    // 4. 추천인 찾기
+    const referrerSnap = await db.collection('users').where('refCode', '==', refCode).limit(1).get();
+    if (referrerSnap.empty) return res.status(400).json({ error: '유효하지 않은 추천 코드' });
+    const referrerDoc = referrerSnap.docs[0];
+    const referrerUid = referrerDoc.id;
+
+    // 5. 양쪽에 50크레딧 지급 (트랜잭션)
+    await db.runTransaction(async (t) => {
+      t.update(db.collection('users').doc(newUid), {
+        credits: admin.firestore.FieldValue.increment(20),
+        referredBy: refCode
+      });
+      t.update(db.collection('users').doc(referrerUid), {
+        credits: admin.firestore.FieldValue.increment(20)
+      });
+    });
+
+    // 6. 크레딧 히스토리 기록
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    const newUserCredits = (newUserSnap.data().credits || 0) + 20;
+    const referrerCredits = (referrerDoc.data().credits || 0) + 20;
+
+    await db.collection('users').doc(newUid).collection('creditHistory').add({
+      type: 'referral', used: 0, amount: 20, remaining: newUserCredits,
+      detail: '친구 추천 보상 (가입)', createdAt: now
+    });
+    await db.collection('users').doc(referrerUid).collection('creditHistory').add({
+      type: 'referral', used: 0, amount: 20, remaining: referrerCredits,
+      detail: '친구 추천 보상 (초대)', createdAt: now
+    });
+
+    console.log(`🎉 추천 완료: ${referrerUid} → ${newUid} (각 20크레딧)`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('❌ 추천 에러:', err);
+    res.status(500).json({ error: '추천 처리 실패' });
+  }
+});
+
 module.exports = router;
