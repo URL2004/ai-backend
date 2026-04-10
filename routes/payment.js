@@ -271,7 +271,7 @@ router.post('/apply-referral', async (req, res) => {
     const referrerDoc = referrerSnap.docs[0];
     const referrerUid = referrerDoc.id;
 
-    // 5. 양쪽에 50크레딧 지급 (트랜잭션)
+    // 5. 양쪽에 20크레딧 지급 (트랜잭션)
     await db.runTransaction(async (t) => {
       t.update(db.collection('users').doc(newUid), {
         credits: admin.firestore.FieldValue.increment(20),
