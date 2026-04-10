@@ -11,6 +11,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-20250514';
+const MODEL_HAIKU = 'claude-haiku-4-5-20251001';
 
 // --- 유틸리티 함수 ---
 
@@ -25,10 +26,10 @@ function cleanText(text) {
     .trim();
 }
 
-async function callClaude(messages, tools, temperature, system) {
+async function callClaude(messages, tools, temperature, system, options = {}) {
   const body = {
-    model: MODEL,
-    max_tokens: 8192,
+    model: options.model || MODEL,
+    max_tokens: options.maxTokens || 8192,
     messages: messages
   };
 
@@ -90,27 +91,30 @@ router.post('/analyze', async (req, res) => {
     const { mode, text } = req.body;
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
-    // ★ 감지: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
+    // ★ 감지: Haiku 모델 사용 (비용 절감), max_tokens도 1024로 축소
     if (mode === 'detect') {
       const data = await callClaude(
         [{ role: 'user', content: `[분석할 글]\n${text}` }],
         null, undefined,
-        DETECT_SYSTEM
+        DETECT_SYSTEM,
+        { model: MODEL_HAIKU, maxTokens: 1024 }
       );
       const result = parseJSON(data.content[0].text);
       return res.json({ ok: true, result, usage: data.usage });
     }
 
-    // 웹 검색 (캐싱 불필요)
+    // 웹 검색 (유저가 활성화한 경우에만 실행)
     let examples = null;
-    try {
-      const searchData = await callClaude(
-        [{ role: 'user', content: `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}` }],
-        [{ type: 'web_search_20250305', name: 'web_search' }]
-      );
-      const textContent = searchData.content.filter(c => c.type === 'text').map(c => c.text).join('');
-      if (textContent.length > 50) examples = textContent.substring(0, 800);
-    } catch(e) {}
+    if (req.body.webSearch) {
+      try {
+        const searchData = await callClaude(
+          [{ role: 'user', content: `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}` }],
+          [{ type: 'web_search_20250305', name: 'web_search' }]
+        );
+        const textContent = searchData.content.filter(c => c.type === 'text').map(c => c.text).join('');
+        if (textContent.length > 50) examples = textContent.substring(0, 800);
+      } catch(e) {}
+    }
 
     // ★ 휴머나이저: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
     const selectedMode = req.body.humanizeMode || 'assignment';
@@ -145,10 +149,12 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
     const systemPrompt = mode === 'detect' ? DETECT_SYSTEM : getHumanizeSystem(req.body.humanizeMode || 'assignment');
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
+    const pdfOptions = mode === 'detect' ? { model: MODEL_HAIKU, maxTokens: 1024 } : {};
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
       null, undefined,
-      systemPrompt
+      systemPrompt,
+      pdfOptions
     );
     const result = parseJSON(data.content[0].text);
     if (result.outputText) result.outputText = cleanText(result.outputText);
