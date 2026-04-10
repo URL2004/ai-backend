@@ -115,8 +115,11 @@ router.post('/analyze', async (req, res) => {
     // ★ 휴머나이저: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
     const selectedMode = req.body.humanizeMode || 'assignment';
     const humanizeSystem = getHumanizeSystem(selectedMode);
+    const userContent = examples
+      ? `[재작성할 텍스트]\n${text}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
+      : `[재작성할 텍스트]\n${text}`;
     const data = await callClaude(
-      [{ role: 'user', content: `[재작성할 텍스트]\n${text}` }],
+      [{ role: 'user', content: userContent }],
       null, undefined,
       humanizeSystem
     );
