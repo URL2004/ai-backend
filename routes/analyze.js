@@ -11,7 +11,6 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-20250514';
-const MODEL_HAIKU = 'claude-haiku-4-5-20251001';
 
 // --- 유틸리티 함수 ---
 
@@ -97,7 +96,7 @@ router.post('/analyze', async (req, res) => {
         [{ role: 'user', content: `[분석할 글]\n${text}` }],
         null, undefined,
         DETECT_SYSTEM,
-        { model: MODEL_HAIKU, maxTokens: 1024 }
+        { model: MODEL, maxTokens: 1024 }
       );
       const result = parseJSON(data.content[0].text);
       return res.json({ ok: true, result, usage: data.usage });
@@ -149,7 +148,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
     const systemPrompt = mode === 'detect' ? DETECT_SYSTEM : getHumanizeSystem(req.body.humanizeMode || 'assignment');
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
-    const pdfOptions = mode === 'detect' ? { model: MODEL_HAIKU, maxTokens: 1024 } : {};
+    const pdfOptions = mode === 'detect' ? { model: MODEL, maxTokens: 1024 } : {};
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
       null, undefined,
