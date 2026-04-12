@@ -247,6 +247,44 @@ router.post('/approve-refund', async (req, res) => {
   }
 });
 
+// 환불 거절 (관리자용)
+router.post('/reject-refund', async (req, res) => {
+  const { orderId, idToken, rejectReason } = req.body;
+
+  const adminUid = await verifyToken(idToken);
+  if (!adminUid) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  if (!ADMIN_UIDS.includes(adminUid)) return res.status(403).json({ error: '관리자 권한이 없습니다.' });
+  if (!orderId) return res.status(400).json({ error: '주문번호가 없습니다.' });
+  if (!rejectReason || rejectReason.trim().length < 2) {
+    return res.status(400).json({ error: '거절 사유를 입력해주세요.' });
+  }
+
+  try {
+    const orderRef = db.collection('orders').doc(orderId);
+    const orderSnap = await orderRef.get();
+
+    if (!orderSnap.exists) return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
+
+    const order = orderSnap.data();
+    if (order.status !== 'refund_requested') {
+      return res.status(400).json({ error: '환불 요청 상태가 아닙니다. 현재: ' + order.status });
+    }
+
+    await orderRef.update({
+      status: 'refund_rejected',
+      rejectReason: rejectReason.trim(),
+      rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      rejectedBy: adminUid
+    });
+
+    console.log(`❌ 환불 거절: ${orderId} (사유: ${rejectReason.trim()}, 관리자: ${adminUid})`);
+    res.json({ ok: true, message: '환불 요청이 거절되었습니다.' });
+  } catch (err) {
+    console.error('❌ 환불 거절 에러:', err);
+    res.status(500).json({ error: '서버 에러 발생' });
+  }
+});
+
 // --- 친구 추천 ---
 router.post('/apply-referral', async (req, res) => {
   try {
