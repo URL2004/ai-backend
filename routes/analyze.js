@@ -65,6 +65,11 @@ async function callClaude(messages, tools, temperature, system, options = {}) {
     console.log("-----------------------------------------");
   }
 
+  // 응답이 max_tokens로 잘린 경우 경고 로그
+  if (data.stop_reason === 'max_tokens') {
+    console.log('⚠️ 응답이 max_tokens 제한으로 잘림 — JSON 복구 시도됨');
+  }
+
   return data;
 }
 
@@ -77,8 +82,28 @@ function parseJSON(raw) {
     if (clean[i] === '{') depth++;
     else if (clean[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
   }
-  if (end === -1) throw new Error('JSON 불완전');
-  return JSON.parse(clean.substring(firstBrace, end + 1));
+  if (end !== -1) return JSON.parse(clean.substring(firstBrace, end + 1));
+
+  // JSON이 잘린 경우: 닫는 괄호를 보충하여 복구 시도
+  let partial = clean.substring(firstBrace);
+  // 열린 문자열 닫기: 마지막 열린 따옴표가 닫히지 않았으면 닫아줌
+  const quotes = (partial.match(/"/g) || []).length;
+  if (quotes % 2 !== 0) partial += '"';
+  // 부족한 닫는 괄호 보충
+  let open = 0;
+  for (const ch of partial) {
+    if (ch === '{') open++;
+    else if (ch === '}') open--;
+  }
+  // 마지막 불완전한 key-value 제거 (trailing comma 등 정리)
+  partial = partial.replace(/,\s*"[^"]*"?\s*:?\s*"?[^"{}]*$/, '');
+  partial = partial.replace(/,\s*$/, '');
+  for (let i = 0; i < open; i++) partial += '}';
+  try {
+    return JSON.parse(partial);
+  } catch {
+    throw new Error('JSON 파싱 실패');
+  }
 }
 
 // --- 라우트 ---
@@ -128,7 +153,8 @@ router.post('/analyze', async (req, res) => {
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
       null, undefined,
-      humanizeSystem
+      humanizeSystem,
+      { maxTokens: 16384 }
     );
     const result = parseJSON(data.content[0].text);
     if (result.outputText) result.outputText = cleanText(result.outputText);
@@ -153,7 +179,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
     const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(req.body.humanizeMode || 'assignment', lang);
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
-    const pdfOptions = mode === 'detect' ? { model: MODEL, maxTokens: 1024 } : {};
+    const pdfOptions = mode === 'detect' ? { model: MODEL, maxTokens: 1024 } : { maxTokens: 16384 };
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
       null, undefined,
