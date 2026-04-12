@@ -4,7 +4,7 @@
 const express = require('express');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
-const { DETECT_SYSTEM, getHumanizeSystem } = require('../prompts');
+const { getDetectSystem, getHumanizeSystem } = require('../prompts');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -88,6 +88,7 @@ router.post('/analyze', async (req, res) => {
   console.log(`[${new Date().toISOString()}] /analyze 요청 IP: ${ip}`);
   try {
     const { mode, text } = req.body;
+    const lang = req.body.lang || 'ko';
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
     // ★ 감지: Haiku 모델 사용 (비용 절감), max_tokens도 1024로 축소
@@ -95,7 +96,7 @@ router.post('/analyze', async (req, res) => {
       const data = await callClaude(
         [{ role: 'user', content: `[분석할 글]\n${text}` }],
         null, undefined,
-        DETECT_SYSTEM,
+        getDetectSystem(lang),
         { model: MODEL, maxTokens: 1024 }
       );
       const result = parseJSON(data.content[0].text);
@@ -106,8 +107,11 @@ router.post('/analyze', async (req, res) => {
     let examples = null;
     if (req.body.webSearch) {
       try {
+        const searchPrompt = lang === 'en'
+          ? `Identify the topic of the following text and briefly provide 2-3 specific real-world examples or statistics related to it. Text: ${text.substring(0, 500)}`
+          : `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}`;
         const searchData = await callClaude(
-          [{ role: 'user', content: `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}` }],
+          [{ role: 'user', content: searchPrompt }],
           [{ type: 'web_search_20250305', name: 'web_search' }]
         );
         const textContent = searchData.content.filter(c => c.type === 'text').map(c => c.text).join('');
@@ -117,7 +121,7 @@ router.post('/analyze', async (req, res) => {
 
     // ★ 휴머나이저: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
     const selectedMode = req.body.humanizeMode || 'assignment';
-    const humanizeSystem = getHumanizeSystem(selectedMode);
+    const humanizeSystem = getHumanizeSystem(selectedMode, lang);
     const userContent = examples
       ? `[재작성할 텍스트]\n${text}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
       : `[재작성할 텍스트]\n${text}`;
@@ -142,11 +146,12 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   try {
     if (!req.file) return res.json({ error: 'PDF 파일이 없습니다.' });
     const mode = req.body.mode || 'detect';
+    const lang = req.body.lang || 'ko';
     const pdfData = await pdfParse(req.file.buffer);
     const text = pdfData.text.trim();
     if (!text || text.length < 5) return res.json({ error: 'PDF에서 텍스트를 추출할 수 없습니다.' });
 
-    const systemPrompt = mode === 'detect' ? DETECT_SYSTEM : getHumanizeSystem(req.body.humanizeMode || 'assignment');
+    const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(req.body.humanizeMode || 'assignment', lang);
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
     const pdfOptions = mode === 'detect' ? { model: MODEL, maxTokens: 1024 } : {};
     const data = await callClaude(
