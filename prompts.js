@@ -83,6 +83,13 @@ const HUMAN_PROMPTS = {
    - 전문 한자어보다 일상적이고 구체적인 순우리말 표현 사용
    - "치명적 한계에 봉착" → "한계에 부딪혀서 사실상 포기하려고 했습니다."
    - 20~30% 문장에 "~인 것 같습니다", "~라고 생각합니다", "~던 것 같습니다" 삽입
+   - 자소서 GPT-ism 절대 금지:
+     · "열정을 가지고", "열정적으로", "끊임없는 노력", "도전 정신"
+     · "성장의 발판으로 삼아", "밑거름이 되었습니다"
+     · "소중한 경험이었습니다", "귀중한 깨달음", "뜻깊은 시간"
+     · "~을(를) 통해 ~을(를) 배웠습니다" (전체에서 1회 이하로 제한)
+     · "주도적으로 이끌었습니다", "적극적으로 임했습니다"
+     · "역량을 발휘", "잠재력을 발휘"
 
 2. 문장 길이 동적 조절
    - 40자 이상의 긴 문장 뒤에는 반드시 5~20자 내외의 짧은 문장 배치
@@ -165,7 +172,13 @@ const HUMAN_PROMPTS = {
     - 비즈니스/경제/투자: 복잡한 지표 대신 "20만원이 30만원 되면 50% 수익" 같은 직관적인 산수를 써라.
     - 교육/정보/IT: '완벽한 논리 구조 해체' 규칙을 여기서만 무시해라. 독자가 얻어갈 '구체적 기대효과'를 명시해라.
     - 리뷰/취미/맛집: 장점만 늘어놓는 AI 특유의 찬양조를 버려라. "솔직히 주차는 헬이었다", "이 가격 주고 또 갈지는 고민이다" 같은 치명적인 단점이나 아쉬운 점을 무조건 1개 이상 솔직하게 넣어라.
-11. 특수문자 금지: *, **, #, -, 백틱 같은 마크다운 기호 절대 사용 금지. 기호 없이 줄글로만 써라.`,
+11. 특수문자 금지: *, **, #, -, 백틱 같은 마크다운 기호 절대 사용 금지. 기호 없이 줄글로만 써라.
+12. AI 블로거 말투 절대 금지:
+    - 도입: "~에 대해 알아보자", "~에 대해 정리해봤어요", "~에 대해 소개해드릴게요"
+    - 마무리: "도움이 되었길 바랍니다", "도움이 되셨으면 좋겠어요", "참고가 되셨길!"
+    - 상투구: "핵심 포인트는", "체크 포인트", "결론적으로 말씀드리면", "포인트는 바로"
+    - 나열형: "첫째, 둘째, 셋째" 같은 번호 나열 금지
+    - 과장: "완벽한", "최고의", "반드시 알아야 할" 같은 상투적 수식어 제거`,
 
     en: `### Core Rewriting Principles:
 
@@ -203,7 +216,11 @@ Follow these rules strictly when rewriting.
 2. 재귀적 참조: 문장 중간에 '(Table 1 참조)', '(Eq. 4)', '(Section 3.2에서 논의된 바와 같이)' 등 논문 내부 구조를 참조하는 표현을 삽입하여 텍스트의 맥락적 깊이를 더하라.
 
 ### [Phase 3: AI 흔적 지우기 (Forbidden Words & GPT-isms)]
-1. 금지어 리스트: 다음 단어들을 절대 사용하지 마라. (혁신적인, 포괄적인, 중추적인, 시사하는 바가 크다, 결론적으로, 요약하자면, ~를 통해 발전할 수 있다 등)
+1. 금지어 리스트(절대 사용 금지):
+   - 단어: 혁신적인, 포괄적인, 총체적인, 중추적인, 유의미한, 필수적인, 궁극적으로, 다각적으로, 심도 있게
+   - 표현: 고찰하다, 탐구하다, 살펴보고자 한다, 주지하다시피, 시사하는 바가 크다, 귀추가 주목된다
+   - 종결구: "~라고 할 수 있다", "~라고 볼 수 있다" (남용 금지, 전체에서 2회 이하)
+   - 관용구: "~에 대한 심층적 고찰", "~에 대한 시사점", "결론적으로", "요약하자면", "~를 통해 발전할 수 있다"
 2. 비판적 어조 유지: 연구 결과에 대한 무조건적인 긍정을 지양하라. 대신 "유의미하나 ~에 국한됨", "해석의 여지가 존재함", "통제 변수의 민감도에 따른 변동성" 등 조심스럽고 비판적인 학술적 태도를 견지하라.
 
 ### [Phase 4: 분야별 특화 알고리즘 적용]
@@ -237,7 +254,7 @@ Follow these rules strictly when rewriting.
 2. Internal Referencing: Embed references to non-existent but logical internal structures, such as "(as detailed in Section 3.2)" or "(refer to Table 1)," to simulate a deeply contextualized manuscript.
 
 ### [Phase 3: Academic Hedging & GPT-ism Purge]
-1. Absolute Ban on GPT-isms: Never use "pivotal," "comprehensive," "transformative," "delve," "tapestry," "it's important to note," or "unlocking potential."
+1. Absolute Ban on GPT-isms: Never use "pivotal," "comprehensive," "transformative," "delve," "tapestry," "it's important to note," "unlocking potential," "robust," "seamless," "leverage," "holistic," "paradigm," "intricate," "underscore," "navigate" (figurative), "multifaceted," "pivotal role," "in today's world," "stands as a testament," "a testament to," "at the forefront of," "plays a crucial role," or "shed light on."
 2. Radical Hedging: Replace certainties with academic caution. Use "may partially be attributed to," "warrants further scrutiny," "remains inconclusive within the current scope," or "is contingent upon."
 3. Critical Stance: Shift from "AI-like optimism" to "Researcher-like skepticism." Emphasize limitations, margin of errors, and potential biases in the data.
 
@@ -270,6 +287,12 @@ Analyze and rewrite the following text to ensure it passes as a 100% human-autho
 상투적인 학술적 접속사 제거 (Natural Transition):
 '따라서', '그러므로', '즉' 같은 접속사를 70% 이상 줄여라.
 대신 "그래서", "이런 이유 때문에", "사실 현장에서는" 같은 사람들이 실제로 쓰는 연결어를 사용하라.
+
+금지 표현 (학생 글에서 AI 티 나는 표현, 절대 사용 금지):
+- 종결구: "사료된다", "판단된다", "고찰된다", "~임을 알 수 있다", "~에 주목할 필요가 있다"
+- 지칭: "본 과제에서는", "본고에서는", "본 글에서는"
+- 수식: "궁극적으로", "근본적으로", "본질적으로", "다각적으로", "심도 있게"
+- 상투구: "~에 대한 고찰", "~에 대한 시사점", "~임을 시사한다"
 
 전공 용어는 쓰되, 설명은 쉽게 (Expert but Peer-like):
 '미미한 실정이다' 대신 '잘 안 지켜지고 있다', '다각적인' 대신 '여러 방면에서' 같은 쉬운 표현을 써라.
