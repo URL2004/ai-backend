@@ -15,15 +15,44 @@ const MODEL = 'claude-sonnet-4-6';
 // ★ 구조화 출력용 tool 정의 (JSON.parse 대신 tool_use로 안전하게 객체 수신)
 const HUMANIZE_TOOL = {
   name: 'return_humanized_result',
-  description: '재작성된 텍스트와 요약을 반환한다.',
+  description: '재작성된 텍스트와 셀프체크 수치를 반환한다. 수치는 outputText를 실제로 세어 채운다 (추정 금지).',
   input_schema: {
     type: 'object',
     properties: {
       outputText: { type: 'string', description: '변환된 글 전체' },
       summary:    { type: 'string', description: '변환 요약 2문장' },
-      detail:     { type: 'string', description: '적용한 기법 상세' }
+      detail:     { type: 'string', description: '적용한 기법 상세' },
+      topNounCounts: {
+        type: 'object',
+        description: 'outputText에서 가장 많이 등장하는 주제어(명사) 상위 3개와 횟수. 예: {"배출":2,"정부":1}. 어떤 값도 4 이상이면 규칙 7 위반 — 재작성',
+        additionalProperties: { type: 'integer' }
+      },
+      listOfThreeCount: {
+        type: 'integer',
+        description: '콤마/쉼표/"와"/"이나"로 3개 이상 묶은 나열 문장 수. 반드시 0 (규칙 8, AI 시그니처)'
+      },
+      consecutiveNounSubjectMax: {
+        type: 'integer',
+        description: '명사 주어로 시작하는 문장의 최대 연속 개수. 2 이하 (규칙 9)'
+      },
+      shortSentenceRatio: {
+        type: 'number',
+        description: '15자 이하 단문 수 / 전체 문장 수. 0.20 이상 (P2)'
+      },
+      hedgeRatio: {
+        type: 'number',
+        description: '추정 어미("~인 것 같다","~라고 생각한다","~던 것 같다") 사용 문장 / 전체 문장. 0.10 이상 0.15 이하 (규칙 5)'
+      },
+      selfCheckPass: {
+        type: 'boolean',
+        description: '위 5개 임계를 전부 통과했을 때만 true. 하나라도 위반이면 false'
+      }
     },
-    required: ['outputText', 'summary', 'detail']
+    required: [
+      'outputText', 'summary', 'detail',
+      'topNounCounts', 'listOfThreeCount', 'consecutiveNounSubjectMax',
+      'shortSentenceRatio', 'hedgeRatio', 'selfCheckPass'
+    ]
   }
 };
 
@@ -45,6 +74,28 @@ function extractToolResult(data, toolName) {
   const toolUse = data.content && data.content.find(c => c.type === 'tool_use' && c.name === toolName);
   if (!toolUse) throw new Error('모델이 구조화 응답을 반환하지 않았습니다.');
   return toolUse.input;
+}
+
+// 셀프체크 수치를 임계와 대조해 위반된 항목을 사람이 읽을 문장으로 반환
+function collectFailedFields(r) {
+  const failed = [];
+  if (r.topNounCounts && Object.values(r.topNounCounts).some(n => n >= 4)) {
+    const over = Object.entries(r.topNounCounts).filter(([, n]) => n >= 4).map(([k, n]) => `"${k}" ${n}회`).join(', ');
+    failed.push(`주제어 4회 이상 반복(규칙 7): ${over} — 지시어/유의어로 교체`);
+  }
+  if (r.listOfThreeCount >= 1) {
+    failed.push(`3개 이상 나열 ${r.listOfThreeCount}건(규칙 8, AI 시그니처) — 별도 문장으로 분리`);
+  }
+  if (r.consecutiveNounSubjectMax >= 3) {
+    failed.push(`명사 주어 ${r.consecutiveNounSubjectMax}연속(규칙 9) — 중간 문장을 부사/접속사/지시어로 시작`);
+  }
+  if (typeof r.shortSentenceRatio === 'number' && r.shortSentenceRatio < 0.20) {
+    failed.push(`15자 이하 단문 비율 ${(r.shortSentenceRatio * 100).toFixed(0)}%(P2, 목표 20%+) — 긴 문장을 쪼개라`);
+  }
+  if (typeof r.hedgeRatio === 'number' && (r.hedgeRatio < 0.10 || r.hedgeRatio > 0.15)) {
+    failed.push(`추정 어미 비율 ${(r.hedgeRatio * 100).toFixed(0)}%(규칙 5, 목표 10~15%) — 조정`);
+  }
+  return failed;
 }
 
 // --- 유틸리티 함수 ---
@@ -154,14 +205,34 @@ router.post('/analyze', async (req, res) => {
       : `[재작성할 텍스트]\n${text}`;
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
-      [HUMANIZE_TOOL], undefined,
+      [HUMANIZE_TOOL], 0.9,
       humanizeSystem,
       { maxTokens: 16384, toolChoice: { type: 'tool', name: HUMANIZE_TOOL.name } }
     );
-    const result = extractToolResult(data, HUMANIZE_TOOL.name);
+    let result = extractToolResult(data, HUMANIZE_TOOL.name);
+
+    // ★ 2-pass 폴백: selfCheckPass=false일 때만 위반 항목을 명시해 재수정
+    let refineUsage = null;
+    if (result.selfCheckPass === false) {
+      const failed = collectFailedFields(result);
+      console.log(`⚠️ selfCheckPass=false, 2-pass 폴백 실행. 위반: ${failed.join(' | ')}`);
+      const refineUser = `[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
+      const refineData = await callClaude(
+        [{ role: 'user', content: refineUser }],
+        [HUMANIZE_TOOL], 0.9,
+        humanizeSystem,
+        { maxTokens: 16384, toolChoice: { type: 'tool', name: HUMANIZE_TOOL.name } }
+      );
+      result = extractToolResult(refineData, HUMANIZE_TOOL.name);
+      refineUsage = refineData.usage;
+      if (result.selfCheckPass === false) {
+        console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
+      }
+    }
+
     if (result.outputText) result.outputText = cleanText(result.outputText);
 
-    res.json({ ok: true, result, usage: data.usage });
+    res.json({ ok: true, result, usage: data.usage, refineUsage });
 
   } catch (err) {
     res.json({ error: err.message });
