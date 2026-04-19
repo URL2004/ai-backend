@@ -324,125 +324,138 @@ Analyze and rewrite the following text to ensure it passes as a 100% human-autho
   },
 
   assignment: {
-    ko: `★ 절대 규칙: 원문의 문단 수를 그대로 유지하라. 원문이 1문단이면 출력도 반드시 1문단이다. 줄바꿈(\\n\\n)을 절대 추가하지 마라.
+    ko: `★ 절대 규칙: 원문 문단 수 유지. 1문단이면 1문단, 3문단이면 3문단. 줄바꿈(\\n\\n) 임의 추가/삭제 금지.
 
-### [문단 단위 이질성 - GPT Killer 문단 분석 대응] (문단이 2개 이상일 때 필수)
-★ 각 문단은 서로 다른 "성격"을 가져야 한다. 다음 중 자동 배정:
-- 문단 A: 사실 나열형 (중립적 서술)
-- 문단 B: 사견 중심형 (학생다운 판단/의심 1줄 이상)
-- 문단 C: 단문 집중형 (10~20자 짧은 문장 2개 연속)
-  예: "막상 해보니 예상과 달랐다. 결국 처음부터 다시 짰다."
-- 문단 D: 의문 제기형 ("~인지 애매하다", "~가 의문이다")
-→ 각 문단의 길이는 반드시 차이가 나야 한다 (최소 1:2 비율)
-→ 같은 성격 문단이 2개 연속으로 나오면 안 된다
-
-### [한국어 자연스러움 + GPT Killer 대응 규칙]
-1. 주어 극단 생략: 문맥상 명백한 주어는 반드시 생략. "~는/은" 주어 반복 절대 금지.
-2. 예측 가능 조합 파괴:
-   - "중요성을 강조하다" → "왜 중요하냐면", "결국 ~이 핵심이다"
-   - "필요성을 느끼다" → "~이 있어야 된다는 생각이 들었다"
-   - "방안을 모색하다" → "어떻게 풀지 고민해봤다"
-3. 의태어/부사/추임새 삽입: "확", "푹", "슬쩍", "대충", "싹", "툭", "사실", "막상", "오히려" 중 2~3개를 자연스러운 위치에
-4. 콤마·중점 나열 강력 제한 (GPT Killer 최대 탐지 패턴):
-   - 3개 이상 항목을 ',' 또는 '·'로 나열 절대 금지. "A이나 B, C" 패턴도 3개 나열로 금지.
-   - 최대 2개까지 "A와 B" 또는 "A부터 B까지"로 묶기.
-   - 3개 이상 표현 시 1개로 대표하거나 문장 분리
-     (X) "수학·통계·자료구조 같은 기본기"
-     (X) "LLM이나 데이터 처리, 모델 학습, 배포로 이어지는"
-     (O) "수학 같은 기본기" / "LLM부터 배포까지" / "모델 학습이나 배포 같은"
-5. 1인칭 구체 앵커 (최소 2회):
-   - 시점: "지난 학기", "작년에", "이번 프로젝트에서"
-   - 도구/숫자: 실제 라이브러리/버전/수치 (PyTorch 2.3, GPT-4o, 3주 동안)
-   - 실수/삽질: "처음엔 ~인 줄 알았는데 틀렸다", "~에서 삽질했다"
-   - 원문에 없어도 상식 범위 내 추가 가능 (허위 사실은 금지)
-6. 문장 종결 다양성:
-   - 평서문 "~다" 연속 3회 이상 금지. 반드시 의문형 또는 추정형으로 끊어야 함.
-   - 의문형 최소 1회 필수 (추정형으로 대체 불가):
-     "~일까?", "~인지 모르겠다", "~게 맞나 싶다", "~인지 사실 잘 모르겠다"
-   - 추정형 최소 2회 필수:
-     "~인 것 같다", "~한 느낌이다", "~이기도 하다"
-7. 추상 명사·AI 클리셰 제한 (각 단어 전체에서 2회 이하):
-   - 금지어: 차별점, 확장성, 역량, 영향, 관점, 중요성, 필요성, 방향성, 흐름, 태도, 성장
-   - AI 클리셰 금지: "당연한 흐름이다", "결국 핵심이다", "꾸준히 성장", "책임 있게 개발", "전체 흐름", "머릿속에 굴리다"
-   - 금지어 추가: 파급력
-   - 구체 명사로 대체: "돈", "시간", "삽질", "실수", "버그", "오류", "막힌 지점"
+### [최상위 5대 체크리스트 - 출력 전 필수 통과]
+GPT Killer가 실제로 잡는 5개 시그널. 하나라도 미충족이면 재작성.
+1. 단어 반복 차단: 동일 핵심 명사(예: "개발자", "모델", "서비스") 전체 4회 이상 금지. 3회째부터 지시어("그것", "이 쪽 일")·유의어로 치환.
+2. 리듬 비대칭: 10자 이상 20자 이하 단문 2회+, 40자+ 장문 2회+. 두 타입이 인접 배치된 지점 1회+.
+3. 구체성 의무: 시점·수치·고유명사 중 2종 이상 본문에 박기. 원문에 없으면 상식 범위에서 반드시 생성.
+4. 문단 이질성: 논리적 흐름이 2개+일 때 각 흐름은 다른 성격(사실/사견/단문/의문). 줄바꿈 개수가 아닌 주제 전환으로 판정. 같은 성격 연속 금지, 길이비 최소 1:2.
+5. 종결 다양성: 의문형 1회+ 필수(추정형으로 대체 금지). 평서 "~다" 3연속 금지.
 
 ### 핵심 재작성 원칙:
 
-꾸밈없는 직설적 도입 (No Flowery Intro):
-"고찰하고자 한다", "논의가 활발하다" 같은 거창한 시작은 금지.
-대신 "이번 과제에서는 ~에 대해 정리해 보았다." 또는 "~는 현재 이런 상황인데, 구체적으로 살펴보면 다음과 같다." 처럼 담백하게 시작하라.
+1. 문단 성격 태깅 (논리적 흐름 기준 분석)
+   ★ 먼저 "논리적 흐름 단위"를 센다. 줄바꿈 개수가 아니라 주제·논지의 전환 지점으로 문단을 판단한다.
+   - 줄바꿈이 여러 개라도 같은 주제·논지가 이어지면 1개 흐름으로 간주.
+   - 줄바꿈이 없어도 주제·논지가 전환되면 별개 흐름으로 간주.
+   - 예: 원문이 7줄 각각 줄바꿈돼 있어도 내용상 "주장→근거→사례→결론" 한 흐름이면 1문단 취급, 단일 문단 규칙만 적용.
+   흐름이 2개 이상일 때만 성격 배정: A: 사실 나열형 / B: 사견 중심형(학생 판단 1줄+) / C: 단문 집중형(10~20자 2연속) / D: 의문 제기형.
+   흐름별로 배정 → 성격대로 작성 → 자가 점검. 같은 성격 연속 금지. 태그는 outputText에 출력하지 않음.
+   ※ 출력 시 원문의 물리적 줄바꿈 구조는 그대로 유지. 성격 배정은 흐름 기준, 줄바꿈은 원문 그대로.
 
-상투적인 학술적 접속사 제거 (Natural Transition):
-'따라서', '그러므로', '즉' 같은 접속사를 70% 이상 줄여라.
-대신 "그래서", "이런 이유 때문에", "사실 현장에서는" 같은 사람들이 실제로 쓰는 연결어를 사용하라.
+2. 1인칭 구체 앵커 (최소 2회, 의무)
+   시점("지난 학기", "작년 3월"), 수치("3주 동안", "에폭 50번", "추론 지연 2초"), 고유명사(PyTorch 2.3, GPT-4o, Llama 3, Hugging Face) 중 2종+.
+   원문에 없으면 상식 범위에서 반드시 생성. 허위 고유명사·과장 수치 금지.
 
-금지 표현 (학생 글에서 AI 티 나는 표현, 절대 사용 금지):
-- 종결구: "사료된다", "판단된다", "고찰된다", "~임을 알 수 있다", "~에 주목할 필요가 있다"
-- 지칭: "본 과제에서는", "본고에서는", "본 글에서는"
-- 수식: "궁극적으로", "근본적으로", "본질적으로", "다각적으로", "심도 있게"
-- 상투구: "~에 대한 고찰", "~에 대한 시사점", "~임을 시사한다"
+3. 주어 생략 + 예측 가능 조합 파괴
+   문맥상 명백한 주어 생략. "~는/은" 주어 반복 금지.
+   "중요성을 강조" → "왜 중요하냐면" / "필요성을 느끼다" → "~이 있어야 된다는 생각이 들었다" / "방안을 모색" → "어떻게 풀지 고민해봤다"
 
-전공 용어는 쓰되, 설명은 쉽게 (Expert but Peer-like):
-'미미한 실정이다' 대신 '잘 안 지켜지고 있다', '다각적인' 대신 '여러 방면에서' 같은 쉬운 표현을 써라.
-하지만 'MDR-TB', 'DOTS', '배양 기간 4~12주' 같은 실제 수치와 전공 용어는 절대 빼지 말고 정확히 적어라.
+4. 나열 패턴 제한 (GPT Killer 최대 탐지)
+   - 3개 이상 ','·'·' 나열 절대 금지. 최대 2개("A와 B", "A부터 B까지")까지.
+   - 2개 묶음("A이나 B", "A랑 B") 패턴이 2문장 연속 등장 금지. 3번째 자리는 단일 명사로.
+     (X) "비용이나 지연시간을 고민해야 된다. 프롬프트 엔지니어링이나 에이전트 설계도 중요하다."
+     (O) "비용이나 지연시간을 고민해야 된다. 프롬프트 엔지니어링도 무시 못 한다."
 
-학생다운 비판적 사견 한 줄 (Student's Opinion):
-정보 나열 끝에 "이론적으로는 2주면 감염력이 없어진다는데, 실제 현장에서 내성이 있는 환자라면 훨씬 더 주의해야 할 것 같다. " 처럼 본인의 생각을 짧게 덧붙여라.
+5. 의태어·추임새 삽입
+   "확", "푹", "슬쩍", "툭", "사실", "막상", "오히려" 중 2~3개를 자연스러운 위치에.
 
-문단 순서 뒤섞기 (Shuffle Paragraphs):
-원문이 여러 문단일 경우, 논리적 흐름이 깨지지 않는 선에서 문단 순서를 재배치하라. 예: 결론부터 말하고 근거를 나열하는 식. 단, 원문이 한 문단이면 한 문단을 유지하라.
+6. 금지 표현 (학생 글에 AI 티 나는 표현)
+   - 종결구: "사료된다", "판단된다", "~임을 알 수 있다", "~는 지점이다", "~는 느낌이다", "~있다는 느낌이다", "역부족이다"
+   - 지칭: "본 과제에서는", "본고에서는", "본 글에서는"
+   - 수식: "궁극적으로", "근본적으로", "다각적으로", "심도 있게"
+   - 상투구: "~에 대한 고찰", "~에 대한 시사점", "사회 곳곳", "전체 흐름", "머릿속에 굴리다"
+   - 추상 명사 2회 이하로 제한: 차별점, 확장성, 역량, 영향, 중요성, 필요성, 방향성, 태도, 성장, 파급력, 핵심
+   - "~해야 한다는 말도 많이 듣는데" → 출처 구체화 ("교수님이 ~라고 하셨는데")
+   - 구체 명사로 대체: 돈, 시간, 삽질, 실수, 버그, 오류, 막힌 지점
 
-키워드 파괴 (Keyword Breakdown):
-어려운 개념어를 고등학생도 이해할 수준으로 풀어써라.
-예: '보호무역주의' → '서로 자기 나라 물건만 챙기려는 분위기', '지정학적 갈등' → '나라 간의 싸움이나 분쟁'
+7. 꾸밈없는 도입 + 자연스러운 접속
+   "고찰하고자 한다", "논의가 활발하다" 금지 → "이번 과제에서는 ~를 정리해 봤다".
+   "따라서/그러므로/즉" 70%+ 삭감 → "그래서", "이런 이유 때문에", "사실 현장에서는".
 
-문장 결합/분해 (Merge & Split):
-원문의 두 문장을 하나의 복문으로 합치거나, 긴 문장은 반드시 2~3개 이상의 단문으로 쪼개라. 원문과 동일한 문장 단위를 유지하지 말 것.
+8. 학생다운 사견 한 줄 + 전공어는 유지
+   정보 나열 끝에 본인 판단·의심 한 줄 ("실제 현장에서는 내성 환자라면 더 조심해야 할 것 같다").
+   전공 용어·수치(MDR-TB, DOTS, "배양 4~12주")는 정확히 보존. 어려운 개념어는 쉽게 풀되 수치는 빼지 말 것.
 
-# 출력 형식:
-- 원문 문체(~이다/~했다/~습니다)반드시 유지, 문체 변환 금지
-- 문장을 항상 다로 끝내기
-- "~거든요", "~잖아요" 같은 과도한 구어체 금지
-- 글의 양을 80프로 이하로 줄이지 말 것
-- ★ 원문의 문단 수를 절대 변경하지 마라. 원문이 1문단이면 출력도 1문단, 원문이 3문단이면 출력도 3문단. 줄바꿈을 임의로 추가하거나 제거하지 말 것.
-- 중간중간 지식의 한계나 현장의 변수를 언급하는 인간적인 통찰을 포함하라.
-- 문장 구조 및 단어 변경률: 80% 이상 (완전한 재창조 수준)
+### [품질 상·하한선]
+- 목표 문체: "대학 수업 과제를 성실히 작성한 학부생"
+- 상한 금지: "진짜로", "~거든", "~잖아", "ㅋㅋ", "~인 듯" — 친구 대화 말투
+- 하한 금지: "~라고 사료된다", "~임을 시사한다" — 논문체
+- 기준: 교수가 "AI로 쓴 것 같다"고 의심 안 할 담백한 서술체. 구어체로 품질 떨어뜨리기보다 약간 딱딱해도 담백 쪽.
+
+### 출력 + 자가 검증
+- 원문 문체(~이다/~했다/~습니다) 유지. 문장 종결 "다"로. 과도한 구어체("~거든요", "~잖아요") 금지.
+- 원문 분량 80%+ 유지. 문단 수·줄바꿈 변경 금지. 문장 구조·어휘 변경률 80%+.
+- 출력 직전: 5대 체크리스트 O/X 판정 → X면 해당 부분 재작성 → 모두 O일 때만 JSON 출력.
+
 # 작업 시작:
-※ 다시 한번 강조: 원문의 문단 수를 반드시 유지할 것. 문단을 나누거나 합치지 마라.
-입력된 아래 텍스트를 위 규칙에 따라 재작성하십시오.`,
+아래 텍스트를 위 규칙에 따라 재작성하라. 원문 문단 수 반드시 유지.`,
 
-    en: `### Core Rewriting Principles:
+    en: `★ Critical Rule: Preserve the exact paragraph count. 1 paragraph stays 1, 3 stays 3. Never add or remove \\n\\n.
 
-No Flowery Intro:
-Do NOT start with grandiose openings like "In today's ever-changing landscape" or "This topic has garnered significant attention."
-Instead, start plainly: "This assignment covers..." or "The situation right now is..., and here's what's actually going on."
+### [TOP 5-Signal Checklist — must pass before output]
+The 5 signals AI detectors actually flag. If any fail, rewrite internally.
+1. Word Repetition: No topic noun (e.g., "developer", "model", "service") appears 4+ times. From the 3rd occurrence, swap with pronouns or synonyms.
+2. Rhythm Asymmetry: 2+ short sentences (under 8 words) and 2+ long (over 25 words), with at least one adjacency between them.
+3. Specificity Mandate: 2+ of these embedded — specific timeframes, concrete numbers, proper nouns. If missing in the original, generate within common-sense bounds.
+4. Paragraph Heterogeneity: When there are 2+ LOGICAL flow units (judged by topic/thesis shifts, not line-break count), each flow has a distinct character (narrative / opinion / short-burst / questioning). No consecutive same-type. Length ratio 1:2+.
+5. Ending Variety: 1+ question sentence (hedges don't count). No 3+ consecutive identical declaratives.
 
-Remove Cliché Academic Connectors (Natural Transition):
-Cut 70%+ of formal transitions like "Furthermore", "Moreover", "Consequently", "Thus."
-Use everyday connectors instead: "So", "Because of this", "In practice", "What this actually means is."
+### Core Rewriting Principles:
 
-Fact-Driven Short Rhythm:
-Don't force-merge sentences. Deliver one key fact per sentence, clearly.
-e.g., "TB spreads through airborne droplets. Negative-pressure isolation rooms are critical. Healthcare workers must wear N95 masks — no exceptions." Keep information density high.
+1. Paragraph Character Tagging (analyze by logical flow)
+   ★ First, count "logical flow units" by topic/thesis shifts — NOT by line-break count.
+   - Multiple line breaks within a single continuous topic = 1 flow.
+   - A topic shift without a line break = separate flow.
+   - Example: 7 line-separated sentences forming one "claim → evidence → example → conclusion" arc = 1 flow, apply single-paragraph rules only.
+   Assign characters only when there are 2+ flows: A: Narrative / B: Opinion-driven (1+ student judgment line) / C: Short-burst (2 consecutive short sentences) / D: Questioning.
+   Internally assign per flow → write to character → self-check. No consecutive same-type. Tags not output.
+   ※ Preserve the original line-break structure in output. Character assignment is by logical flow; line breaks stay as-is.
 
-Expert Terms, Simple Explanations (Expert but Peer-like):
-Don't say "remains insufficiently addressed" — say "it's not really being followed."
-Don't say "multifaceted" — say "from a bunch of different angles."
-BUT keep real data and technical terms exactly as they are: "MDR-TB", "DOTS", "culture period of 4-12 weeks."
+2. First-Person Concrete Anchors (2+ mandatory)
+   Time ("last semester", "March 2024"), numbers ("3 weeks", "50 runs", "2-sec latency"), proper nouns (PyTorch 2.3, GPT-4o, Llama 3, Hugging Face).
+   If missing in original, generate within common-sense bounds. No fabricated proper nouns or exaggerated numbers.
 
-One Line of Student Opinion:
-After listing facts, add a brief personal take: "In theory, infectiousness drops after two weeks of treatment, but if the patient has drug resistance, you'd obviously need to be way more careful."
+3. No Flowery Intro + Natural Transitions
+   Ban "In today's ever-changing landscape", "This topic has garnered significant attention."
+   Cut 70%+ of "Furthermore", "Moreover", "Consequently", "Thus." Use "So", "Because of this", "In practice" instead.
 
-# Output Rules:
-- Preserve the original register and style (formal or informal) — do not shift tone
-- No overly casual slang ("gonna", "ngl", "lowkey") unless the original uses it
-- Do not reduce the text to less than 80% of the original length
-- Do not insert line breaks every 2-3 sentences
-- Maintain the original paragraph structure
-- Include human-like insights about knowledge limitations or real-world variables throughout
+4. List Pattern Restriction (GPT Killer top signal)
+   - Never list 3+ items with commas or slashes ("math, statistics, and data structures").
+   - 2-item pairs ("A or B", "A and B") must not appear in 2+ consecutive sentences. Break on the 3rd.
+
+5. Fact-Driven Short Rhythm
+   Don't force-merge sentences. One key fact per sentence. Keep information density high.
+   e.g., "TB spreads through droplets. Isolation rooms are critical. N95 masks, no exceptions."
+
+6. AI Cliché Blacklist (each word at most 2 times)
+   - Banned: "pivotal role", "crucial", "at the forefront", "in today's world", "plays a crucial role", "multifaceted", "comprehensive", "delve into", "tapestry", "navigate" (figurative)
+   - Banned endings: "it can be said that", "it is worth noting that", "left a lasting impression"
+   - Replace abstract nouns with concrete ones: money, time, bugs, errors, stuck points
+
+7. Expert Terms, Simple Explanations
+   "Remains insufficiently addressed" → "it's not really being followed."
+   "Multifaceted" → "from a bunch of different angles."
+   BUT keep real data and technical terms exact: "MDR-TB", "DOTS", "culture period of 4-12 weeks."
+
+8. Student Opinion Line
+   After facts, add a brief personal take: "In theory X, but in practice with drug-resistant cases you'd obviously need more caution."
+
+### [Quality Ceiling & Floor]
+- Target: "an undergraduate writing a serious class assignment"
+- Ceiling: No texting/SNS tone ("gonna", "ngl", "lowkey", "tbh"). No peer chat.
+- Floor: No stiff academic phrasing ("it is hereby posited that...").
+- Standard: Plain, direct prose a professor wouldn't suspect as AI-generated. Prefer slightly stiff plain prose over casual slang.
+
+### Output + Self-Verification
+- Preserve original register and style (formal/informal). No overly casual slang unless original uses it.
+- Keep 80%+ of original length. Preserve paragraph structure and line breaks. Rewrite 80%+ of sentence structure and vocabulary.
+- Before output: judge each of the 5 signals PASS/FAIL → rewrite any FAIL → emit JSON only when all PASS.
+
 # Begin:
-Rewrite the input text below according to the rules above.`
+Rewrite the input text below according to the rules above, preserving the original paragraph count.`
   }
 };
 
