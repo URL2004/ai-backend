@@ -381,7 +381,7 @@ P3. 마지막 문장이 앞 주장을 재보증/요약/평가하지 말 것
 - ★ 원문의 문단 수를 절대 변경하지 마라. 줄바꿈을 임의로 추가/제거하지 말 것.
 - 문장 구조 및 단어 변경률: 80% 이상
 
-# 출력 전 실측 (tool schema의 수치 필드를 실제로 세어 채울 것):
+# 출력 전 실측 (내부적으로만 세고 출력에는 노출 금지):
 - ★ P1: 쉼표 복문("A절, B절.") 비율 ≤ 30%
 - ★ P2: 15자 이하 단문 비율 ≥ 20%
 - ★ P3: 마지막 문장이 재보증/요약 아님
@@ -463,7 +463,7 @@ The 7 signals AI detectors actually flag. If any fail, rewrite internally.
 ### Output + Self-Verification
 - Preserve original register and style (formal/informal). No overly casual slang unless original uses it.
 - Keep 80%+ of original length. Preserve paragraph structure and line breaks. Rewrite 80%+ of sentence structure and vocabulary.
-- Before output: actually count and fill the numeric fields in the tool schema. Rewrite if any threshold fails, then recount.
+- Before output: judge each of the 5 signals PASS/FAIL → rewrite any FAIL → emit JSON only when all PASS.
 
 # Begin:
 Rewrite the input text below according to the rules above, preserving the original paragraph count.`
