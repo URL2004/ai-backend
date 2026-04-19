@@ -12,6 +12,41 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-6';
 
+// ★ 구조화 출력용 tool 정의 (JSON.parse 대신 tool_use로 안전하게 객체 수신)
+const HUMANIZE_TOOL = {
+  name: 'return_humanized_result',
+  description: '재작성된 텍스트와 요약을 반환한다.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      outputText: { type: 'string', description: '변환된 글 전체' },
+      summary:    { type: 'string', description: '변환 요약 2문장' },
+      detail:     { type: 'string', description: '적용한 기법 상세' }
+    },
+    required: ['outputText', 'summary', 'detail']
+  }
+};
+
+const DETECT_TOOL = {
+  name: 'return_detection_result',
+  description: 'AI 생성 확률 판정 결과를 반환한다.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      probability: { type: 'number', description: '0~100 사이 AI 생성 확률' },
+      summary:     { type: 'string', description: '핵심 판단 이유 1~2문장' },
+      detail:      { type: 'string', description: '상세 분석 100자 이상' }
+    },
+    required: ['probability', 'summary', 'detail']
+  }
+};
+
+function extractToolResult(data, toolName) {
+  const toolUse = data.content && data.content.find(c => c.type === 'tool_use' && c.name === toolName);
+  if (!toolUse) throw new Error('모델이 구조화 응답을 반환하지 않았습니다.');
+  return toolUse.input;
+}
+
 // --- 유틸리티 함수 ---
 
 function cleanText(text) {
@@ -33,6 +68,7 @@ async function callClaude(messages, tools, temperature, system, options = {}) {
   };
 
   if (tools) body.tools = tools;
+  if (options.toolChoice) body.tool_choice = options.toolChoice;
   if (temperature !== undefined) body.temperature = temperature;
 
   // ★ 시스템 프롬프트에 cache_control 적용 (고정 프롬프트가 캐싱됨)
@@ -65,45 +101,11 @@ async function callClaude(messages, tools, temperature, system, options = {}) {
     console.log("-----------------------------------------");
   }
 
-  // 응답이 max_tokens로 잘린 경우 경고 로그
   if (data.stop_reason === 'max_tokens') {
-    console.log('⚠️ 응답이 max_tokens 제한으로 잘림 — JSON 복구 시도됨');
+    console.log('⚠️ 응답이 max_tokens 제한으로 잘림');
   }
 
   return data;
-}
-
-function parseJSON(raw) {
-  const clean = raw.replace(/```json|```/g, '').trim();
-  const firstBrace = clean.indexOf('{');
-  if (firstBrace === -1) throw new Error('JSON 없음');
-  let depth = 0, end = -1;
-  for (let i = firstBrace; i < clean.length; i++) {
-    if (clean[i] === '{') depth++;
-    else if (clean[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
-  }
-  if (end !== -1) return JSON.parse(clean.substring(firstBrace, end + 1));
-
-  // JSON이 잘린 경우: 닫는 괄호를 보충하여 복구 시도
-  let partial = clean.substring(firstBrace);
-  // 열린 문자열 닫기: 마지막 열린 따옴표가 닫히지 않았으면 닫아줌
-  const quotes = (partial.match(/"/g) || []).length;
-  if (quotes % 2 !== 0) partial += '"';
-  // 부족한 닫는 괄호 보충
-  let open = 0;
-  for (const ch of partial) {
-    if (ch === '{') open++;
-    else if (ch === '}') open--;
-  }
-  // 마지막 불완전한 key-value 제거 (trailing comma 등 정리)
-  partial = partial.replace(/,\s*"[^"]*"?\s*:?\s*"?[^"{}]*$/, '');
-  partial = partial.replace(/,\s*$/, '');
-  for (let i = 0; i < open; i++) partial += '}';
-  try {
-    return JSON.parse(partial);
-  } catch {
-    throw new Error('JSON 파싱 실패');
-  }
 }
 
 // --- 라우트 ---
@@ -116,15 +118,15 @@ router.post('/analyze', async (req, res) => {
     const lang = req.body.lang || 'ko';
     if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
-    // ★ 감지: Haiku 모델 사용 (비용 절감), max_tokens도 1024로 축소
+    // ★ 감지: tool_use로 구조화 응답 수신 (JSON.parse 실패 원천 차단)
     if (mode === 'detect') {
       const data = await callClaude(
         [{ role: 'user', content: `[분석할 글]\n${text}` }],
-        null, undefined,
+        [DETECT_TOOL], undefined,
         getDetectSystem(lang),
-        { model: MODEL, maxTokens: 1024 }
+        { model: MODEL, maxTokens: 1024, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
       );
-      const result = parseJSON(data.content[0].text);
+      const result = extractToolResult(data, DETECT_TOOL.name);
       return res.json({ ok: true, result, usage: data.usage });
     }
 
@@ -152,11 +154,11 @@ router.post('/analyze', async (req, res) => {
       : `[재작성할 텍스트]\n${text}`;
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
-      null, undefined,
+      [HUMANIZE_TOOL], undefined,
       humanizeSystem,
-      { maxTokens: 16384 }
+      { maxTokens: 16384, toolChoice: { type: 'tool', name: HUMANIZE_TOOL.name } }
     );
-    const result = parseJSON(data.content[0].text);
+    const result = extractToolResult(data, HUMANIZE_TOOL.name);
     if (result.outputText) result.outputText = cleanText(result.outputText);
 
     res.json({ ok: true, result, usage: data.usage });
@@ -179,14 +181,17 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
     const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(req.body.humanizeMode || 'assignment', lang);
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
-    const pdfOptions = mode === 'detect' ? { model: MODEL, maxTokens: 1024 } : { maxTokens: 16384 };
+    const activeTool = mode === 'detect' ? DETECT_TOOL : HUMANIZE_TOOL;
+    const pdfOptions = mode === 'detect'
+      ? { model: MODEL, maxTokens: 1024, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
+      : { maxTokens: 16384, toolChoice: { type: 'tool', name: HUMANIZE_TOOL.name } };
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
-      null, undefined,
+      [activeTool], undefined,
       systemPrompt,
       pdfOptions
     );
-    const result = parseJSON(data.content[0].text);
+    const result = extractToolResult(data, activeTool.name);
     if (result.outputText) result.outputText = cleanText(result.outputText);
 
     res.json({

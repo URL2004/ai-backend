@@ -39,9 +39,7 @@ const DETECT_SYSTEM = {
 - 위 '인간 작성물'의 특징이 3개 이상 발견되면 AI 확률을 10% 이하로 급격히 낮춰라.
 - 특히 '짧은 호흡의 팩트 나열'과 '비판적 사견'이 결합된 경우, 강력한 인간 작성의 증거로 간주하여 AI 확률을 0%로 출력하라.
 - 문체는 격식을 차렸으나(~이다) 연결어가 자연스러운 경우 인간으로 판정하라.
-- AI 특유의 과도한 정형성, 반복 패턴, 완벽한 구조가 강하게 보일 경우에만 AI 작성으로 판단하라.
-
-JSON만 응답: {"probability":숫자,"summary":"핵심 판단 이유 1~2문장","detail":"상세 분석 100자 이상"}`,
+- AI 특유의 과도한 정형성, 반복 패턴, 완벽한 구조가 강하게 보일 경우에만 AI 작성으로 판단하라.`,
 
   en: `# Role: Precision linguistic evaluator analyzing characteristics of human-written text
 
@@ -68,9 +66,7 @@ JSON만 응답: {"probability":숫자,"summary":"핵심 판단 이유 1~2문장"
 - If 3 or more human-writing traits are found, sharply lower AI probability to 10% or below.
 - If "short fact-driven sentences" AND "critical personal opinion" appear together, treat as strong evidence of human authorship and output 0%.
 - If the register is formal but transitions feel natural and varied, classify as human.
-- Only classify as AI-written when excessive structure, repetitive patterns, and perfect organization are strongly present.
-
-Respond with JSON only: {"probability":number,"summary":"1-2 sentence core judgment","detail":"detailed analysis, 100+ characters"}`
+- Only classify as AI-written when excessive structure, repetitive patterns, and perfect organization are strongly present.`
 };
 
 const HUMAN_PROMPTS = {
@@ -486,13 +482,10 @@ function getDetectSystem(lang = 'ko') {
 }
 
 // ★ 휴머나이저 시스템 프롬프트 반환 (고정 부분만 → 캐싱됨)
+// ★ 출력 구조는 tool_use 스키마가 강제하므로 시스템 프롬프트에서 JSON 지시를 제거함.
 function getHumanizeSystem(mode, lang = 'ko') {
   const modePrompts = HUMAN_PROMPTS[mode] || HUMAN_PROMPTS['assignment'];
-  const basePrompt = modePrompts[lang] || modePrompts['ko'];
-  const outputFormat = lang === 'en'
-    ? '\n\n### Output Format (respond ONLY with the JSON below):\n{"outputText":"full rewritten text","summary":"2-sentence summary of changes","detail":"detailed techniques applied"}'
-    : '\n\n### 출력 형식 (반드시 아래 JSON으로만 응답):\n{"outputText":"변환된 글 전체","summary":"변환 요약 2문장","detail":"적용한 기법 상세"}';
-  return basePrompt + outputFormat;
+  return modePrompts[lang] || modePrompts['ko'];
 }
 
 module.exports = { getDetectSystem, getHumanizeSystem };
