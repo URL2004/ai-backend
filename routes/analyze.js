@@ -13,48 +13,77 @@ const API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-6';
 
 // ★ 구조화 출력용 tool 정의 (JSON.parse 대신 tool_use로 안전하게 객체 수신)
-const HUMANIZE_TOOL = {
-  name: 'return_humanized_result',
-  description: '재작성된 텍스트와 셀프체크 수치를 반환한다. 수치는 outputText를 실제로 세어 채운다 (추정 금지).',
-  input_schema: {
-    type: 'object',
-    properties: {
-      outputText: { type: 'string', description: '변환된 글 전체' },
-      summary:    { type: 'string', description: '변환 요약 2문장' },
-      detail:     { type: 'string', description: '적용한 기법 상세' },
-      topNounCounts: {
-        type: 'object',
-        description: 'outputText에서 가장 많이 등장하는 주제어(명사) 상위 3개와 횟수. 예: {"배출":2,"정부":1}. 어떤 값도 4 이상이면 규칙 7 위반 — 재작성',
-        additionalProperties: { type: 'integer' }
-      },
-      listOfThreeCount: {
-        type: 'integer',
-        description: '콤마/쉼표/"와"/"이나"로 3개 이상 묶은 나열 문장 수. 반드시 0 (규칙 8, AI 시그니처)'
-      },
-      consecutiveNounSubjectMax: {
-        type: 'integer',
-        description: '명사 주어로 시작하는 문장의 최대 연속 개수. 2 이하 (규칙 9)'
-      },
-      shortSentenceRatio: {
-        type: 'number',
-        description: '15자 이하 단문 수 / 전체 문장 수. 0.20 이상 (P2)'
-      },
-      hedgeRatio: {
-        type: 'number',
-        description: '추정 어미("~인 것 같다","~라고 생각한다","~던 것 같다") 사용 문장 / 전체 문장. 0.10 이상 0.15 이하 (규칙 5)'
-      },
-      selfCheckPass: {
-        type: 'boolean',
-        description: '위 5개 임계를 전부 통과했을 때만 true. 하나라도 위반이면 false'
-      }
+// ★ mode별 스키마 분기: assignment만 의문문/접속사/P3/문단비율 필드 강제
+function buildHumanizeTool(mode) {
+  const baseProperties = {
+    outputText: { type: 'string', description: '변환된 글 전체' },
+    summary:    { type: 'string', description: '변환 요약 2문장' },
+    detail:     { type: 'string', description: '적용한 기법 상세' },
+    topNounCounts: {
+      type: 'object',
+      description: 'outputText에서 가장 많이 등장하는 주제어(명사) 상위 3개와 횟수. 예: {"배출":2,"정부":1}. 어떤 값도 4 이상이면 규칙 7 위반 — 재작성',
+      additionalProperties: { type: 'integer' }
     },
-    required: [
-      'outputText', 'summary', 'detail',
-      'topNounCounts', 'listOfThreeCount', 'consecutiveNounSubjectMax',
-      'shortSentenceRatio', 'hedgeRatio', 'selfCheckPass'
-    ]
+    listOfThreeCount: {
+      type: 'integer',
+      description: '콤마/쉼표/"와"/"이나"로 3개 이상 묶은 나열 문장 수. 반드시 0 (규칙 8, AI 시그니처)'
+    },
+    consecutiveNounSubjectMax: {
+      type: 'integer',
+      description: '명사 주어로 시작하는 문장의 최대 연속 개수. 2 이하 (규칙 9)'
+    },
+    shortSentenceRatio: {
+      type: 'number',
+      description: '15자 이하 단문 수 / 전체 문장 수. 0.20 이상 (P2)'
+    },
+    hedgeRatio: {
+      type: 'number',
+      description: '추정 어미("~인 것 같다","~라고 생각한다","~던 것 같다") 사용 문장 / 전체 문장. 0.10 이상 0.15 이하 (규칙 5)'
+    },
+    selfCheckPass: {
+      type: 'boolean',
+      description: '위 임계를 전부 통과했을 때만 true. 하나라도 위반이면 false'
+    }
+  };
+  const baseRequired = [
+    'outputText', 'summary', 'detail',
+    'topNounCounts', 'listOfThreeCount', 'consecutiveNounSubjectMax',
+    'shortSentenceRatio', 'hedgeRatio', 'selfCheckPass'
+  ];
+
+  if (mode === 'assignment') {
+    baseProperties.questionSentenceCount = {
+      type: 'integer',
+      description: '의문문("?"로 끝) 개수. 1 이상 (규칙 9)'
+    };
+    baseProperties.conjunctionStartRatio = {
+      type: 'number',
+      description: '접속사/전환어구(따라서/그러므로/결국/결론적으로/이를 위해/이런 흐름 속에서/한편/또한/그런데/그래서/사실 등)로 시작하는 문장 수 / 전체 문장. 0.15 이하 (규칙 2)'
+    };
+    baseProperties.lastSentenceIsReassurance = {
+      type: 'boolean',
+      description: '마지막 문장이 재보증/요약/평가 패턴("~할 필요가 있다","~에 달려 있다","~얘기다","정리하자면","결론적으로")이면 true. false여야 통과 (P3)'
+    };
+    baseProperties.paragraphLengthRatio = {
+      type: 'number',
+      description: '(가장 긴 문단의 문장 수) / (가장 짧은 문단의 문장 수). 2 이상 (규칙 6). 문단이 1개면 -1로 보고하여 검증 skip'
+    };
+    baseRequired.push(
+      'questionSentenceCount', 'conjunctionStartRatio',
+      'lastSentenceIsReassurance', 'paragraphLengthRatio'
+    );
   }
-};
+
+  return {
+    name: 'return_humanized_result',
+    description: '재작성된 텍스트와 셀프체크 수치를 반환한다. 수치는 outputText를 실제로 세어 채운다 (추정 금지).',
+    input_schema: {
+      type: 'object',
+      properties: baseProperties,
+      required: baseRequired
+    }
+  };
+}
 
 const DETECT_TOOL = {
   name: 'return_detection_result',
@@ -77,9 +106,8 @@ function extractToolResult(data, toolName) {
 }
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
-//   listOfThreeCount(3요소 나열), questionSentenceCount(의문문), shortSentenceRatio(15자 이하 비율)만 실측.
-//   hedgeRatio/consecutiveNounSubjectMax/topNounCounts는 모델 보고치 유지.
-function verifyCheckFields(result) {
+//   assignment 모드는 접속사 시작 비율/P3 마지막 문장/주제어 빈도/문단 비율까지 서버에서 추가 실측.
+function verifyCheckFields(result, mode) {
   const text = result.outputText || '';
 
   // 1) 3개 이상 나열: 콤마로 묶인 3요소 (한/영 모두)
@@ -103,28 +131,98 @@ function verifyCheckFields(result) {
   const shortCount = sentences.filter(s => s.replace(/\s+/g, '').length <= 15).length;
   const actualShortRatio = sentences.length > 0 ? shortCount / sentences.length : 0;
 
-  // 실측이 모델 보고와 어긋나면 더 엄격한 값으로 덮어쓰기
   const overrides = [];
+
   if (actualListCount > (result.listOfThreeCount || 0)) {
     overrides.push(`listOfThreeCount ${result.listOfThreeCount} → ${actualListCount}`);
     result.listOfThreeCount = actualListCount;
-  }
-  if (actualQuestions < (result.questionSentenceCount || 0)) {
-    overrides.push(`questionSentenceCount ${result.questionSentenceCount} → ${actualQuestions}`);
-    result.questionSentenceCount = actualQuestions;
   }
   if (actualShortRatio < (result.shortSentenceRatio || 0)) {
     overrides.push(`shortSentenceRatio ${(result.shortSentenceRatio || 0).toFixed(2)} → ${actualShortRatio.toFixed(2)}`);
     result.shortSentenceRatio = actualShortRatio;
   }
 
+  // ===== assignment 전용 확장 실측 =====
+  if (mode === 'assignment') {
+    // 의문문 실측: 모델 보고값과 다르면 덮어쓰기 (0건 위반 감지 위해 항상 주입)
+    if (actualQuestions !== (result.questionSentenceCount || 0)) {
+      overrides.push(`questionSentenceCount ${result.questionSentenceCount} → ${actualQuestions}`);
+      result.questionSentenceCount = actualQuestions;
+    }
+
+    // 접속사/전환어구 시작 실측
+    const connectorRe = /^(따라서|그러므로|즉|결국|결론적으로|궁극적으로|이를 위해|이런 흐름 속에서|이러한|한편|또한|게다가|그런데|그래서|사실|물론|그렇다고|하지만|반면|반면에|아울러)\b/;
+    const connectorStarts = sentences.filter(s => connectorRe.test(s)).length;
+    const actualConjRatio = sentences.length > 0 ? connectorStarts / sentences.length : 0;
+    if (actualConjRatio > (result.conjunctionStartRatio || 0)) {
+      overrides.push(`conjunctionStartRatio ${(result.conjunctionStartRatio || 0).toFixed(2)} → ${actualConjRatio.toFixed(2)}`);
+      result.conjunctionStartRatio = actualConjRatio;
+    }
+
+    // P3 마지막 문장 재보증/평가 패턴 실측
+    const lastSentence = sentences[sentences.length - 1] || '';
+    const reassureRe = /(필요가 있다|설득력 (있어 보이기도|있기도|있어 보이|있)|얘기다|정리하자면|결론적으로|더 중요해 보인다|달려\s?있다|지속가능한지는|재고할 필요)/;
+    const actualLastReassure = reassureRe.test(lastSentence);
+    if (actualLastReassure && result.lastSentenceIsReassurance !== true) {
+      overrides.push(`lastSentenceIsReassurance ${result.lastSentenceIsReassurance} → true`);
+      result.lastSentenceIsReassurance = true;
+    }
+
+    // 주제어 실측: 2~4글자 한글 명사 추출 (조사 스트립 근사), 빈도 top 3 산출
+    // 모델 보고에서 누락된 주제어가 실측에서 4회 이상이면 덮어쓰기
+    const tokens = (text.match(/[가-힣]{2,4}/g) || [])
+      .map(t => t.replace(/(은|는|이|가|을|를|에|의|와|과|도|만|로|으로|에서|에게|부터|까지)$/, ''))
+      .filter(t => t.length >= 2);
+    const freq = {};
+    for (const t of tokens) freq[t] = (freq[t] || 0) + 1;
+    const topEntries = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    const reportedCounts = result.topNounCounts || {};
+    const reportedMax = Math.max(0, ...Object.values(reportedCounts));
+    const actualMax = topEntries.length ? topEntries[0][1] : 0;
+    if (actualMax >= 4 && actualMax > reportedMax) {
+      const newCounts = Object.fromEntries(topEntries);
+      overrides.push(`topNounCounts 최대 ${reportedMax} → ${actualMax} (${topEntries[0][0]})`);
+      result.topNounCounts = newCounts;
+    }
+
+    // 문단 비율 실측: \n{2,}로 문단 분리 후 문장 수 기준 max/min
+    const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+    if (paragraphs.length >= 2) {
+      const sentCounts = paragraphs.map(p => {
+        const ps = p.split(/(?<=[.!?？。])\s+|\n+/).map(s => s.trim()).filter(Boolean);
+        return ps.length || 1;
+      });
+      const maxS = Math.max(...sentCounts);
+      const minS = Math.min(...sentCounts);
+      const actualRatio = minS > 0 ? maxS / minS : 1;
+      if (actualRatio < (result.paragraphLengthRatio || Infinity)) {
+        overrides.push(`paragraphLengthRatio ${result.paragraphLengthRatio} → ${actualRatio.toFixed(2)}`);
+        result.paragraphLengthRatio = actualRatio;
+      }
+    } else if (result.paragraphLengthRatio !== -1) {
+      // 문단 1개면 검증 skip sentinel
+      result.paragraphLengthRatio = -1;
+    }
+  }
+
   // 임계 기준으로 selfCheckPass 재계산 (collectFailedFields와 동일 기준)
-  const violations =
+  let violations =
     (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4)) ||
     result.listOfThreeCount >= 1 ||
     result.consecutiveNounSubjectMax >= 3 ||
     (typeof result.shortSentenceRatio === 'number' && result.shortSentenceRatio < 0.20) ||
     (typeof result.hedgeRatio === 'number' && (result.hedgeRatio < 0.10 || result.hedgeRatio > 0.15));
+
+  if (mode === 'assignment') {
+    violations = violations
+      || (typeof result.conjunctionStartRatio === 'number' && result.conjunctionStartRatio > 0.15)
+      || result.lastSentenceIsReassurance === true
+      || (result.questionSentenceCount || 0) === 0
+      || (typeof result.paragraphLengthRatio === 'number'
+          && result.paragraphLengthRatio >= 0
+          && result.paragraphLengthRatio < 2);
+  }
+
   const recomputedPass = !violations;
 
   if (overrides.length > 0) {
@@ -139,7 +237,7 @@ function verifyCheckFields(result) {
 }
 
 // 셀프체크 수치를 임계와 대조해 위반된 항목을 사람이 읽을 문장으로 반환
-function collectFailedFields(r) {
+function collectFailedFields(r, mode) {
   const failed = [];
   if (r.topNounCounts && Object.values(r.topNounCounts).some(n => n >= 4)) {
     const over = Object.entries(r.topNounCounts).filter(([, n]) => n >= 4).map(([k, n]) => `"${k}" ${n}회`).join(', ');
@@ -156,6 +254,22 @@ function collectFailedFields(r) {
   }
   if (typeof r.hedgeRatio === 'number' && (r.hedgeRatio < 0.10 || r.hedgeRatio > 0.15)) {
     failed.push(`추정 어미 비율 ${(r.hedgeRatio * 100).toFixed(0)}%(규칙 5, 목표 10~15%) — 조정`);
+  }
+  if (mode === 'assignment') {
+    if (typeof r.conjunctionStartRatio === 'number' && r.conjunctionStartRatio > 0.15) {
+      failed.push(`접속사/전환어구 시작 ${(r.conjunctionStartRatio * 100).toFixed(0)}%(규칙 2, 목표 15% 이하) — '사실/이런 흐름 속에서/이를 위해/그런데/그래서/결국' 같은 시작을 본문 중간 부사·지시어로 교체`);
+    }
+    if (r.lastSentenceIsReassurance === true) {
+      failed.push(`마지막 문장이 재보증/평가(P3 위반) — '~할 필요가 있다/~에 달려 있다/~지속가능한지는' 대신 구체 사례·미해결 질문·관찰로 닫아라`);
+    }
+    if ((r.questionSentenceCount || 0) === 0) {
+      failed.push(`의문문 0건(규칙 9, 최소 1건) — 주장 중 하나를 '정말 ~일까?' 같은 의문형으로 전환`);
+    }
+    if (typeof r.paragraphLengthRatio === 'number'
+        && r.paragraphLengthRatio >= 0
+        && r.paragraphLengthRatio < 2) {
+      failed.push(`문단 길이 비대칭 부족 (비율 ${r.paragraphLengthRatio.toFixed(2)}, 규칙 6, 목표 1:2 이상) — 짧은 문단은 1~2문장으로, 긴 문단은 4문장 이상으로 차이를 벌려라`);
+    }
   }
   return failed;
 }
@@ -262,32 +376,33 @@ router.post('/analyze', async (req, res) => {
     // ★ 휴머나이저: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
     const selectedMode = req.body.humanizeMode || 'assignment';
     const humanizeSystem = getHumanizeSystem(selectedMode, lang);
+    const humanizeTool = buildHumanizeTool(selectedMode);
     const userContent = examples
       ? `[재작성할 텍스트]\n${text}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
       : `[재작성할 텍스트]\n${text}`;
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
-      [HUMANIZE_TOOL], 0.9,
+      [humanizeTool], 0.9,
       humanizeSystem,
-      { maxTokens: 16384, toolChoice: { type: 'tool', name: HUMANIZE_TOOL.name } }
+      { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
     );
-    let result = extractToolResult(data, HUMANIZE_TOOL.name);
-    verifyCheckFields(result);
+    let result = extractToolResult(data, humanizeTool.name);
+    verifyCheckFields(result, selectedMode);
 
     // ★ 2-pass 폴백: selfCheckPass=false일 때만 위반 항목을 명시해 재수정
     let refineUsage = null;
     if (result.selfCheckPass === false) {
-      const failed = collectFailedFields(result);
+      const failed = collectFailedFields(result, selectedMode);
       console.log(`⚠️ selfCheckPass=false, 2-pass 폴백 실행. 위반: ${failed.join(' | ')}`);
       const refineUser = `[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
       const refineData = await callClaude(
         [{ role: 'user', content: refineUser }],
-        [HUMANIZE_TOOL], 0.9,
+        [humanizeTool], 0.9,
         humanizeSystem,
-        { maxTokens: 16384, toolChoice: { type: 'tool', name: HUMANIZE_TOOL.name } }
+        { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
       );
-      result = extractToolResult(refineData, HUMANIZE_TOOL.name);
-      verifyCheckFields(result);
+      result = extractToolResult(refineData, humanizeTool.name);
+      verifyCheckFields(result, selectedMode);
       refineUsage = refineData.usage;
       if (result.selfCheckPass === false) {
         console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
@@ -314,12 +429,13 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     const text = pdfData.text.trim();
     if (!text || text.length < 5) return res.json({ error: 'PDF에서 텍스트를 추출할 수 없습니다.' });
 
-    const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(req.body.humanizeMode || 'assignment', lang);
+    const humanizeModePdf = req.body.humanizeMode || 'assignment';
+    const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(humanizeModePdf, lang);
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
-    const activeTool = mode === 'detect' ? DETECT_TOOL : HUMANIZE_TOOL;
+    const activeTool = mode === 'detect' ? DETECT_TOOL : buildHumanizeTool(humanizeModePdf);
     const pdfOptions = mode === 'detect'
       ? { model: MODEL, maxTokens: 1024, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
-      : { maxTokens: 16384, toolChoice: { type: 'tool', name: HUMANIZE_TOOL.name } };
+      : { maxTokens: 16384, toolChoice: { type: 'tool', name: activeTool.name } };
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
       [activeTool], undefined,
