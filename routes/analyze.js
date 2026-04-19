@@ -76,6 +76,68 @@ function extractToolResult(data, toolName) {
   return toolUse.input;
 }
 
+// ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
+//   listOfThreeCount(3요소 나열), questionSentenceCount(의문문), shortSentenceRatio(15자 이하 비율)만 실측.
+//   hedgeRatio/consecutiveNounSubjectMax/topNounCounts는 모델 보고치 유지.
+function verifyCheckFields(result) {
+  const text = result.outputText || '';
+
+  // 1) 3개 이상 나열: 콤마로 묶인 3요소 (한/영 모두)
+  const commaListRe = /[가-힣A-Za-z0-9]+\s*,\s*[가-힣A-Za-z0-9]+\s*,\s*[가-힣A-Za-z0-9]+/g;
+  // "정부, 기업, 개인" 같은 전형 + "A와 B, 그리고 C" 같은 변형
+  const mixedListRe = /[가-힣]+(?:\s*(?:,|과|와))\s*[가-힣]+\s*(?:,\s*(?:그리고\s*)?|(?:과|와)\s*)[가-힣]+/g;
+  const listMatches = new Set([
+    ...(text.match(commaListRe) || []),
+    ...(text.match(mixedListRe) || [])
+  ]);
+  const actualListCount = listMatches.size;
+
+  // 2) 의문문: "?" 또는 전각 물음표로 끝나는 문장 수
+  const actualQuestions = (text.match(/[?？]/g) || []).length;
+
+  // 3) 15자 이하 단문 비율: "다./까?/요./!" 등 종결부 뒤로 분리해 공백 제외 길이 측정
+  const sentences = text
+    .split(/(?<=[.!?？。])\s+|\n+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  const shortCount = sentences.filter(s => s.replace(/\s+/g, '').length <= 15).length;
+  const actualShortRatio = sentences.length > 0 ? shortCount / sentences.length : 0;
+
+  // 실측이 모델 보고와 어긋나면 더 엄격한 값으로 덮어쓰기
+  const overrides = [];
+  if (actualListCount > (result.listOfThreeCount || 0)) {
+    overrides.push(`listOfThreeCount ${result.listOfThreeCount} → ${actualListCount}`);
+    result.listOfThreeCount = actualListCount;
+  }
+  if (actualQuestions < (result.questionSentenceCount || 0)) {
+    overrides.push(`questionSentenceCount ${result.questionSentenceCount} → ${actualQuestions}`);
+    result.questionSentenceCount = actualQuestions;
+  }
+  if (actualShortRatio < (result.shortSentenceRatio || 0)) {
+    overrides.push(`shortSentenceRatio ${(result.shortSentenceRatio || 0).toFixed(2)} → ${actualShortRatio.toFixed(2)}`);
+    result.shortSentenceRatio = actualShortRatio;
+  }
+
+  // 임계 기준으로 selfCheckPass 재계산 (collectFailedFields와 동일 기준)
+  const violations =
+    (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4)) ||
+    result.listOfThreeCount >= 1 ||
+    result.consecutiveNounSubjectMax >= 3 ||
+    (typeof result.shortSentenceRatio === 'number' && result.shortSentenceRatio < 0.20) ||
+    (typeof result.hedgeRatio === 'number' && (result.hedgeRatio < 0.10 || result.hedgeRatio > 0.15));
+  const recomputedPass = !violations;
+
+  if (overrides.length > 0) {
+    console.log(`🔎 서버 재검증 덮어쓰기: ${overrides.join(' | ')}`);
+  }
+  if (result.selfCheckPass !== recomputedPass) {
+    console.log(`🔎 selfCheckPass 재계산: ${result.selfCheckPass} → ${recomputedPass}`);
+    result.selfCheckPass = recomputedPass;
+  }
+
+  return result;
+}
+
 // 셀프체크 수치를 임계와 대조해 위반된 항목을 사람이 읽을 문장으로 반환
 function collectFailedFields(r) {
   const failed = [];
@@ -210,6 +272,7 @@ router.post('/analyze', async (req, res) => {
       { maxTokens: 16384, toolChoice: { type: 'tool', name: HUMANIZE_TOOL.name } }
     );
     let result = extractToolResult(data, HUMANIZE_TOOL.name);
+    verifyCheckFields(result);
 
     // ★ 2-pass 폴백: selfCheckPass=false일 때만 위반 항목을 명시해 재수정
     let refineUsage = null;
@@ -224,6 +287,7 @@ router.post('/analyze', async (req, res) => {
         { maxTokens: 16384, toolChoice: { type: 'tool', name: HUMANIZE_TOOL.name } }
       );
       result = extractToolResult(refineData, HUMANIZE_TOOL.name);
+      verifyCheckFields(result);
       refineUsage = refineData.usage;
       if (result.selfCheckPass === false) {
         console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);

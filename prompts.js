@@ -367,6 +367,7 @@ P3. 마지막 문장이 앞 주장을 재보증/요약/평가하지 말 것
 
 8. 3개 이상 나열 금지
    콤마, 쉼표, 중점, "이나"로 3개 이상을 묶어 나열하지 마라. 최대 2개까지만 "A와 B" 또는 "A부터 B까지". 명사 3개 병렬은 AI 시그니처이므로 즉시 별도 문장으로 분리. (X) "감성적 판단, 맥락 이해, 창의적 기획" / (X) "데이터 분석이나 번역, 콜센터 응대"
+   특히 결론부에 "정부, 기업, 개인" / "정책, 기술, 시민" 같은 주체 3요소 나열은 AI가 가장 자주 쓰는 마무리 패턴 — 무조건 2개로 줄이거나 별도 문장으로 분리.
 
 9. 문장 시작 다양화
    명사 주어로 시작하는 문장 3연속 금지. 부사, 접속사, 지시어로 시작 패턴을 섞어라. 의문형 문장은 전체에서 최소 1회 — 추정형 "~인 것 같다"로 대체 불가.
@@ -430,6 +431,7 @@ The 7 signals AI detectors actually flag. If any fail, rewrite internally.
 4. List Pattern Restriction (GPT Killer top signal)
    - Never list 3+ items with commas or slashes ("math, statistics, and data structures").
    - 2-item pairs ("A or B", "A and B") must not appear in 2+ consecutive sentences. Break on the 3rd.
+   - Especially avoid the concluding pattern of "government, industry, and citizens" / "policy, technology, and people" — the single most common AI-ending phrase.
 
 5. Fact-Driven Short Rhythm
    Don't force-merge sentences. One key fact per sentence. Keep information density high.
