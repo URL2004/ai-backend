@@ -17,8 +17,8 @@ const MODEL = 'claude-sonnet-4-6';
 function buildHumanizeTool(mode) {
   const baseProperties = {
     outputText: { type: 'string', description: '변환된 글 전체' },
-    summary:    { type: 'string', description: '변환 요약 2문장' },
-    detail:     { type: 'string', description: '적용한 기법 상세' },
+    summary:    { type: 'string', description: '변환 요약 2문장. 존댓말(~입니다/~합니다체)로 작성.' },
+    detail:     { type: 'string', description: '적용한 기법 상세. 존댓말(~입니다/~합니다체)로 작성.' },
     topNounCounts: {
       type: 'object',
       description: 'outputText에서 가장 많이 등장하는 주제어(명사) 상위 3개와 횟수. 예: {"배출":2,"정부":1}. 어떤 값도 4 이상이면 규칙 7 위반 — 재작성',
@@ -92,8 +92,8 @@ const DETECT_TOOL = {
     type: 'object',
     properties: {
       probability: { type: 'number', description: '0~100 사이 AI 생성 확률' },
-      summary:     { type: 'string', description: '핵심 판단 이유 1~2문장' },
-      detail:      { type: 'string', description: '상세 분석 100자 이상' }
+      summary:     { type: 'string', description: '핵심 판단 이유 1~2문장. 존댓말(~입니다/~합니다체)로 작성.' },
+      detail:      { type: 'string', description: '상세 분석 100자 이상. 존댓말(~입니다/~합니다체)로 작성.' }
     },
     required: ['probability', 'summary', 'detail']
   }
