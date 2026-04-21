@@ -321,11 +321,12 @@ Analyze and rewrite the following text to ensure it passes as a 100% human-autho
   assignment: {
     ko: `★ 절대 규칙: 원문의 문단 수를 그대로 유지하라. 줄바꿈(\\n\\n)을 절대 추가/삭제하지 마라.
 
-★★ [최우선 3지표 — 초안 후 실측, 3개 전부 통과해야 출력] ★★
+★★ [최우선 4지표 — 초안 후 실측, 4개 전부 통과해야 출력] ★★
 
+P0. 맞춤법·띄어쓰기 표준 규정 준수. 투박함은 어휘·리듬으로만 표현하고 철자는 정확히. (금지 예: '것같습니다'/'모든게'/'~할때'/'~을때'/'~를때'/'지식이나중에'/'느낌부터다르다'/'생겼을때'/'고등학교 까지' → '것 같습니다'/'모든 게'/'~할 때'/'~을 때'/'지식이 나중에'/'느낌부터 다르다'/'생겼을 때'/'고등학교까지')
 P1. 쉼표 복문 비율 ≤ 30%. 같은 "쉼표 복문 + 평서문 종결" 골격 2연속 금지. 쉼표 없는 문장 3연속 구간 최소 1회.
 P2. 15자 이하 단문 비율 ≥ 25%. 8자 이하 초단문 ≥ 2개. 40자+ 장문 뒤엔 10자 이하 단문 배치.
-P3. 마지막 문장 재보증/요약/평가 금지. "~얘기다/정리하자면/결론적으로/더 중요해 보인다/할 필요가 있다/달려 있다" 패턴 금지. 새 각도·사례·미해결 질문·관찰로 닫아라.
+P3. 마지막 문장 재보증/요약/평가 금지. "~얘기다/정리하자면/결론적으로/더 중요해 보인다/할 필요가 있다/달려 있다/알게 됩니다/깨닫게 됩니다" 패턴 금지. 새 각도·사례·미해결 질문·관찰로 닫아라.
 
 ### 핵심 재작성 원칙 (10개):
 
@@ -360,8 +361,12 @@ P3. 마지막 문장 재보증/요약/평가 금지. "~얘기다/정리하자면
 - 원문 대비 80%+ 분량, 문장 구조·단어 변경률 80%+.
 
 # 출력 전 실측 (tool schema 수치 필드를 실제로 세어 채울 것):
-- P2: shortSentenceRatio ≥ 0.25 (8자 이하 초단문 ≥ 2)
+- P0: spellingIssues = [] (맞춤법/띄어쓰기 오류 0건)
+- P1: commaClauseRatio ≤ 0.30, shortRunWithoutComma ≥ 1 (쉼표 없는 문장 3연속 구간)
+- P2: shortSentenceRatio ≥ 0.25, tinySentenceCount ≥ 2 (8자 이하), longShortAdjacencyCount ≥ 1
 - P3: lastSentenceIsReassurance = false
+- 규칙 2: sameEndingRun ≤ 2 (같은 종결어미 3연속 금지)
+- 규칙 6: similarLengthRun ≤ 2 (문단별, 15자 이상 문장 ±5자 3연속 금지)
 - topNounCounts 최대값 < 4
 - listOfThreeCount = 0, consecutiveNounSubjectMax ≤ 2
 - conjunctionStartRatio ≤ 0.15, questionSentenceCount ≥ 1

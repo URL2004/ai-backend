@@ -62,15 +62,47 @@ function buildHumanizeTool(mode) {
     };
     baseProperties.lastSentenceIsReassurance = {
       type: 'boolean',
-      description: '마지막 문장이 재보증/요약/평가 패턴("~할 필요가 있다","~에 달려 있다","~얘기다","정리하자면","결론적으로")이면 true. false여야 통과 (P3)'
+      description: '마지막 문장이 재보증/요약/평가 패턴("~할 필요가 있다","~에 달려 있다","~얘기다","정리하자면","결론적으로","알게 됩니다","깨닫게 됩니다")이면 true. false여야 통과 (P3)'
     };
     baseProperties.paragraphLengthRatio = {
       type: 'number',
       description: '(가장 긴 문단의 문장 수) / (가장 짧은 문단의 문장 수). 2 이상 (규칙 6). 문단이 1개면 -1로 보고하여 검증 skip'
     };
+    baseProperties.commaClauseRatio = {
+      type: 'number',
+      description: '쉼표 포함 + 종결/연결어미(다/니다/며/고/어서/아서/면서/는데/지만 등)가 2개 이상인 문장 / 전체. 0.30 이하 (P1). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.shortRunWithoutComma = {
+      type: 'integer',
+      description: '쉼표 없는 평서문 3연속 구간 개수. 1 이상 (P1). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.tinySentenceCount = {
+      type: 'integer',
+      description: '8자 이하 초단문 개수(공백 제외). 2 이상 (P2). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.longShortAdjacencyCount = {
+      type: 'integer',
+      description: '40자+ 장문 바로 뒤에 10자 이하 단문이 오는 경우 수. 1 이상 (P2). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.sameEndingRun = {
+      type: 'integer',
+      description: '같은 종결어미(습니다/됩니다/있습니다 등)로 연속 종결된 최대 문장 수. 2 이하 (규칙 2). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.similarLengthRun = {
+      type: 'integer',
+      description: '한 문단 내 ±5자 이내 문장 길이 연속 최대치(15자 이상 문장만 판정). 2 이하 (규칙 6). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.spellingIssues = {
+      type: 'array',
+      description: '맞춤법/띄어쓰기 블랙리스트 적중 목록. 빈 배열이어야 통과 (P0). 서버 실측으로 덮어씀.',
+      items: { type: 'string' }
+    };
     baseRequired.push(
       'questionSentenceCount', 'conjunctionStartRatio',
-      'lastSentenceIsReassurance', 'paragraphLengthRatio'
+      'lastSentenceIsReassurance', 'paragraphLengthRatio',
+      'commaClauseRatio', 'shortRunWithoutComma',
+      'tinySentenceCount', 'longShortAdjacencyCount',
+      'sameEndingRun', 'similarLengthRun', 'spellingIssues'
     );
   }
 
@@ -128,7 +160,8 @@ function verifyCheckFields(result, mode, inputParaCount) {
     .split(/(?<=[.!?？。])\s+|\n+/)
     .map(s => s.trim())
     .filter(Boolean);
-  const shortCount = sentences.filter(s => s.replace(/\s+/g, '').length <= 15).length;
+  const charLen = (s) => s.replace(/\s+/g, '').length;
+  const shortCount = sentences.filter(s => charLen(s) <= 15).length;
   const actualShortRatio = sentences.length > 0 ? shortCount / sentences.length : 0;
 
   const overrides = [];
@@ -159,9 +192,25 @@ function verifyCheckFields(result, mode, inputParaCount) {
       result.conjunctionStartRatio = actualConjRatio;
     }
 
-    // P3 마지막 문장 재보증/평가 패턴 실측
+    // P3 마지막 문장 재보증/평가 패턴 실측 (교훈형 일반화 마무리 포함)
     const lastSentence = sentences[sentences.length - 1] || '';
-    const reassureRe = /(필요가 있다|설득력 (있어 보이기도|있기도|있어 보이|있)|얘기다|정리하자면|결론적으로|더 중요해 보인다|달려\s?있다|지속가능한지는|재고할 필요)/;
+    const reassureRe = new RegExp([
+      '필요가 있다',
+      '설득력 (있어 보이기도|있기도|있어 보이|있)',
+      '얘기다',
+      '정리하자면',
+      '결론적으로',
+      '더 중요해 보인다',
+      '달려\\s?있다',
+      '지속가능한지는',
+      '재고할 필요',
+      '(뭐|무엇|왜|어떻게|어떤지)(를|가|인지|인지를)?\\s*(조금씩|점점|서서히|비로소)?\\s*(알게|깨닫게|배우게|이해하게)\\s*(됩니다|된다|되었다|됐다)',
+      '알게 됩니다[.!]?$',
+      '깨닫게 됩니다[.!]?$',
+      '배우게 됩니다[.!]?$',
+      '된 것 같습니다[.!]?$',
+      '는 것이었습니다[.!]?$'
+    ].join('|'));
     const actualLastReassure = reassureRe.test(lastSentence);
     if (actualLastReassure && result.lastSentenceIsReassurance !== true) {
       overrides.push(`lastSentenceIsReassurance ${result.lastSentenceIsReassurance} → true`);
@@ -214,6 +263,130 @@ function verifyCheckFields(result, mode, inputParaCount) {
         result.paragraphCountMismatch = null;
       }
     }
+
+    // ===== P1: 쉼표 복문 비율 + 쉼표 없는 3문장 연속 구간 =====
+    const clauseEndingRe = /(?:다|니다|며|고|어서|아서|면서|는데|지만|었고|이며|되어|하여|하며)\s*,/;
+    const commaClauseCount = sentences.filter(s => /,/.test(s) && clauseEndingRe.test(s)).length;
+    const actualCommaClauseRatio = sentences.length > 0 ? commaClauseCount / sentences.length : 0;
+    if (actualCommaClauseRatio > (result.commaClauseRatio || 0)) {
+      overrides.push(`commaClauseRatio ${(result.commaClauseRatio || 0).toFixed(2)} → ${actualCommaClauseRatio.toFixed(2)}`);
+      result.commaClauseRatio = actualCommaClauseRatio;
+    }
+    let noCommaRun = 0, shortRunCount = 0;
+    for (const s of sentences) {
+      if (!/,/.test(s) && /[다까요][.!?？。]?$/.test(s.trim())) {
+        noCommaRun++;
+        if (noCommaRun === 3) shortRunCount++;
+      } else {
+        noCommaRun = 0;
+      }
+    }
+    if (shortRunCount > (result.shortRunWithoutComma || 0)) {
+      overrides.push(`shortRunWithoutComma ${result.shortRunWithoutComma} → ${shortRunCount}`);
+      result.shortRunWithoutComma = shortRunCount;
+    }
+
+    // ===== P2: 초단문(8자 이하) + 장문(40자+)-단문(10자-) 인접 =====
+    const tinyCount = sentences.filter(s => charLen(s) <= 8).length;
+    if (tinyCount < (result.tinySentenceCount ?? Infinity)) {
+      overrides.push(`tinySentenceCount ${result.tinySentenceCount} → ${tinyCount}`);
+      result.tinySentenceCount = tinyCount;
+    }
+    let adjacency = 0;
+    for (let i = 0; i < sentences.length - 1; i++) {
+      if (charLen(sentences[i]) >= 40 && charLen(sentences[i + 1]) <= 10) adjacency++;
+    }
+    if (adjacency < (result.longShortAdjacencyCount ?? Infinity)) {
+      overrides.push(`longShortAdjacencyCount ${result.longShortAdjacencyCount} → ${adjacency}`);
+      result.longShortAdjacencyCount = adjacency;
+    }
+
+    // ===== 규칙 2: 동일 종결어미 연속 =====
+    const endingGroup = (s) => {
+      const t = s.trim();
+      if (/같습니다[.!]?$/.test(t)) return 'GATDA';
+      if (/겠습니다[.!]?$/.test(t)) return 'GETDA';
+      if (/였습니다[.!]?$/.test(t)) return 'YEOT';
+      if (/습니다[.!]?$/.test(t)) return 'SEUPNIDA';
+      if (/ㅂ니다[.!]?$/.test(t)) return 'BNIDA';
+      if (/까\??$/.test(t) || /\?$/.test(t)) return 'QUESTION';
+      return 'OTHER';
+    };
+    let curGroup = null, runLen = 0, maxSameEnding = 0;
+    for (const s of sentences) {
+      const g = endingGroup(s);
+      if (g === curGroup) runLen++;
+      else { curGroup = g; runLen = 1; }
+      if (g !== 'OTHER' && g !== 'QUESTION' && runLen > maxSameEnding) maxSameEnding = runLen;
+    }
+    if (maxSameEnding > (result.sameEndingRun || 0)) {
+      overrides.push(`sameEndingRun ${result.sameEndingRun} → ${maxSameEnding}`);
+      result.sameEndingRun = maxSameEnding;
+    }
+
+    // ===== 규칙 6: 문단별 ±5자 이내 문장 길이 3연속 (15자 이상만 판정) =====
+    let maxSimRun = 0;
+    for (const p of paragraphs) {
+      const ps = p.split(/(?<=[.!?？。])\s+/).map(s => s.trim()).filter(Boolean);
+      const lens = ps.map(charLen);
+      let simRun = 1;
+      for (let i = 1; i < lens.length; i++) {
+        if (lens[i] >= 15 && lens[i - 1] >= 15 && Math.abs(lens[i] - lens[i - 1]) <= 5) {
+          simRun++;
+          if (simRun > maxSimRun) maxSimRun = simRun;
+        } else {
+          simRun = 1;
+        }
+      }
+    }
+    if (maxSimRun > (result.similarLengthRun || 0)) {
+      overrides.push(`similarLengthRun ${result.similarLengthRun} → ${maxSimRun}`);
+      result.similarLengthRun = maxSimRun;
+    }
+
+    // ===== 규칙 9: 명사 주어 연속 실측 (모델 자기보고 덮어쓰기) =====
+    const nonNounStartRe = /^(사실|솔직히|결국|오히려|막상|어쩌면|돌이켜보면|어떤|이런|이렇게|그런|그렇게|하지만|그러나|그런데|그래서|한편|또한|아직|이미|아마|정말|진짜|특히|물론)/;
+    const nounSubjectRe = /^[가-힣]+(은|는|이|가)\s/;
+    let nsRun = 0, nsMax = 0;
+    for (const s of sentences) {
+      const t = s.trim();
+      if (nounSubjectRe.test(t) && !nonNounStartRe.test(t)) {
+        nsRun++;
+        if (nsRun > nsMax) nsMax = nsRun;
+      } else {
+        nsRun = 0;
+      }
+    }
+    if (nsMax > (result.consecutiveNounSubjectMax || 0)) {
+      overrides.push(`consecutiveNounSubjectMax ${result.consecutiveNounSubjectMax} → ${nsMax}`);
+      result.consecutiveNounSubjectMax = nsMax;
+    }
+
+    // ===== 규칙 5: hedgeRatio 양방향 실측 (상하한 0.10~0.15 때문에 절대값 오차로 교정) =====
+    const hedgeRe = /(인 것 같|라고 생각|던 것 같|았던 것 같|았을지도|일지도 모|일 수도 있|인 듯)/;
+    const hedgeCount = sentences.filter(s => hedgeRe.test(s)).length;
+    const actualHedge = sentences.length > 0 ? hedgeCount / sentences.length : 0;
+    if (Math.abs(actualHedge - (result.hedgeRatio || 0)) > 0.03) {
+      overrides.push(`hedgeRatio ${(result.hedgeRatio || 0).toFixed(2)} → ${actualHedge.toFixed(2)}`);
+      result.hedgeRatio = actualHedge;
+    }
+
+    // ===== P0: 맞춤법/띄어쓰기 블랙리스트 =====
+    const spellingRules = [
+      { re: /것같(습니다|다|네요|아요|은)/, msg: '것같→것 같' },
+      { re: /모든게/, msg: '모든게→모든 게' },
+      { re: /(지식|사실|얘기|기술|감정|느낌|생각)이나중에/, msg: '~이나중에→~이 나중에' },
+      { re: /(느낌|생각|기분|태도|감정|방식)부터다르/, msg: '~부터다르다→~부터 다르다' },
+      { re: /(생겼|있었|없었|됐|했|갔|왔|봤|만났|나왔|들어왔|받았|줬|보냈|썼)을때/, msg: '~을때→~을 때' },
+      { re: /(할|갈|올|볼|쓸|줄|받을|만날|나올|들어올|시작할|끝낼|마칠)때(마다|부터|까지|에|는|도)?/, msg: '~할때→~할 때' },
+      { re: /(초등학교|중학교|고등학교|대학교|학원)\s까지/, msg: '학교 까지→학교까지' },
+      { re: /(그때|이때|지금|나중|평소)\s까지/, msg: '~ 까지→~까지' }
+    ];
+    const spellIssues = spellingRules.filter(r => r.re.test(text)).map(r => r.msg);
+    if (spellIssues.length > (result.spellingIssues?.length || 0)) {
+      overrides.push(`spellingIssues ${(result.spellingIssues || []).length} → ${spellIssues.length}`);
+      result.spellingIssues = spellIssues;
+    }
   }
 
   // 임계 기준으로 selfCheckPass 재계산 (collectFailedFields와 동일 기준)
@@ -232,7 +405,14 @@ function verifyCheckFields(result, mode, inputParaCount) {
       || (typeof result.paragraphLengthRatio === 'number'
           && result.paragraphLengthRatio >= 0
           && result.paragraphLengthRatio < 2)
-      || !!result.paragraphCountMismatch;
+      || !!result.paragraphCountMismatch
+      || (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.30)
+      || (result.shortRunWithoutComma || 0) < 1
+      || (result.tinySentenceCount || 0) < 2
+      || (result.longShortAdjacencyCount || 0) < 1
+      || (result.sameEndingRun || 0) >= 3
+      || (result.similarLengthRun || 0) >= 3
+      || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0);
   }
 
   const recomputedPass = !violations;
@@ -284,6 +464,27 @@ function collectFailedFields(r, mode) {
     }
     if (r.paragraphCountMismatch) {
       failed.push(`문단 수 불일치: 입력 ${r.paragraphCountMismatch.input}문단 → 출력 ${r.paragraphCountMismatch.output}문단. 원문의 문단 수를 그대로 유지하라. \\n\\n을 추가/삭제하지 말 것.`);
+    }
+    if (typeof r.commaClauseRatio === 'number' && r.commaClauseRatio > 0.30) {
+      failed.push(`쉼표 복문 비율 ${(r.commaClauseRatio * 100).toFixed(0)}%(P1, 목표 30% 이하) — 쉼표로 이어붙인 긴 문장을 마침표로 끊어 독립 문장으로 재배치`);
+    }
+    if ((r.shortRunWithoutComma || 0) < 1) {
+      failed.push(`쉼표 없는 3문장 연속 구간 0회(P1, 최소 1회) — 쉼표 없이 짧은 단정문이 3개 이어지는 구간을 1회 이상 만들어라`);
+    }
+    if ((r.tinySentenceCount || 0) < 2) {
+      failed.push(`8자 이하 초단문 ${r.tinySentenceCount || 0}개(P2, 최소 2개) — "그게 전부입니다." "숫자가 말해줍니다." 같은 초단문 추가`);
+    }
+    if ((r.longShortAdjacencyCount || 0) < 1) {
+      failed.push(`장문(40자+) 뒤 단문(10자-) 인접 0회(P2, 최소 1회) — 긴 문장 직후에 10자 이하 단문 배치`);
+    }
+    if ((r.sameEndingRun || 0) >= 3) {
+      failed.push(`동일 종결어미 ${r.sameEndingRun}연속(규칙 2) — 3번째 문장을 의문형/추정형("~것 같습니다")/경험형으로 교체`);
+    }
+    if ((r.similarLengthRun || 0) >= 3) {
+      failed.push(`문장 길이 ±5자 ${r.similarLengthRun}연속(규칙 6) — 중간 문장을 대폭 줄이거나 늘려서 리듬 파괴`);
+    }
+    if (Array.isArray(r.spellingIssues) && r.spellingIssues.length > 0) {
+      failed.push(`맞춤법/띄어쓰기 오류(P0): ${r.spellingIssues.join(', ')} — 해당 표기 교정`);
     }
   }
   return failed;
@@ -473,4 +674,6 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   }
 });
 
+router.verifyCheckFields = verifyCheckFields;
+router.collectFailedFields = collectFailedFields;
 module.exports = router;
