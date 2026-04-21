@@ -107,7 +107,7 @@ function extractToolResult(data, toolName) {
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
 //   assignment 모드는 접속사 시작 비율/P3 마지막 문장/주제어 빈도/문단 비율까지 서버에서 추가 실측.
-function verifyCheckFields(result, mode) {
+function verifyCheckFields(result, mode, inputParaCount) {
   const text = result.outputText || '';
 
   // 1) 3개 이상 나열: 콤마로 묶인 3요소 (한/영 모두)
@@ -203,6 +203,17 @@ function verifyCheckFields(result, mode) {
       // 문단 1개면 검증 skip sentinel
       result.paragraphLengthRatio = -1;
     }
+
+    // 문단 수 일치 실측: 입력 문단 수 vs 출력 문단 수
+    if (typeof inputParaCount === 'number' && inputParaCount > 1) {
+      const outputParas = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+      if (outputParas.length !== inputParaCount) {
+        overrides.push(`paragraphCount 입력 ${inputParaCount}개 → 출력 ${outputParas.length}개 불일치`);
+        result.paragraphCountMismatch = { input: inputParaCount, output: outputParas.length };
+      } else {
+        result.paragraphCountMismatch = null;
+      }
+    }
   }
 
   // 임계 기준으로 selfCheckPass 재계산 (collectFailedFields와 동일 기준)
@@ -220,7 +231,8 @@ function verifyCheckFields(result, mode) {
       || (result.questionSentenceCount || 0) === 0
       || (typeof result.paragraphLengthRatio === 'number'
           && result.paragraphLengthRatio >= 0
-          && result.paragraphLengthRatio < 2);
+          && result.paragraphLengthRatio < 2)
+      || !!result.paragraphCountMismatch;
   }
 
   const recomputedPass = !violations;
@@ -269,6 +281,9 @@ function collectFailedFields(r, mode) {
         && r.paragraphLengthRatio >= 0
         && r.paragraphLengthRatio < 2) {
       failed.push(`문단 길이 비대칭 부족 (비율 ${r.paragraphLengthRatio.toFixed(2)}, 규칙 6, 목표 1:2 이상) — 짧은 문단은 1~2문장으로, 긴 문단은 4문장 이상으로 차이를 벌려라`);
+    }
+    if (r.paragraphCountMismatch) {
+      failed.push(`문단 수 불일치: 입력 ${r.paragraphCountMismatch.input}문단 → 출력 ${r.paragraphCountMismatch.output}문단. 원문의 문단 수를 그대로 유지하라. \\n\\n을 추가/삭제하지 말 것.`);
     }
   }
   return failed;
@@ -380,6 +395,8 @@ router.post('/analyze', async (req, res) => {
     const userContent = examples
       ? `[재작성할 텍스트]\n${text}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
       : `[재작성할 텍스트]\n${text}`;
+    const inputParaCount = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
+
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
       [humanizeTool], 0.9,
@@ -387,7 +404,7 @@ router.post('/analyze', async (req, res) => {
       { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
     );
     let result = extractToolResult(data, humanizeTool.name);
-    verifyCheckFields(result, selectedMode);
+    verifyCheckFields(result, selectedMode, inputParaCount);
 
     // ★ 2-pass 폴백: selfCheckPass=false일 때만 위반 항목을 명시해 재수정
     let refineUsage = null;
@@ -402,7 +419,7 @@ router.post('/analyze', async (req, res) => {
         { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
       );
       result = extractToolResult(refineData, humanizeTool.name);
-      verifyCheckFields(result, selectedMode);
+      verifyCheckFields(result, selectedMode, inputParaCount);
       refineUsage = refineData.usage;
       if (result.selfCheckPass === false) {
         console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
