@@ -5,12 +5,60 @@ const express = require('express');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const { getDetectSystem, getHumanizeSystem } = require('../prompts');
+const { admin, db } = require('../config');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-6';
+
+// idToken 검증 + 크레딧 원자적 예약(차감). 실패 시 status 코드 포함 에러 throw.
+async function verifyAndReserveCredits(idToken, needed, opType) {
+  if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 });
+  let decoded;
+  try { decoded = await admin.auth().verifyIdToken(idToken); }
+  catch { throw Object.assign(new Error('AUTH_INVALID'), { status: 401 }); }
+  const uid = decoded.uid;
+  const userRef = db.collection('users').doc(uid);
+  let reserved = 0;
+  await db.runTransaction(async (t) => {
+    const snap = await t.get(userRef);
+    if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+    const d = snap.data();
+    if ((d.plan || 'free') === 'unlimited') return;
+    const credits = d.credits || 0;
+    if (credits < needed) throw Object.assign(new Error('INSUFFICIENT_CREDITS'), { status: 402 });
+    const newCredits = credits - needed;
+    t.update(userRef, { credits: newCredits });
+    const hist = userRef.collection('creditHistory').doc();
+    t.set(hist, {
+      type: opType, used: needed, amount: 0, remaining: newCredits,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    reserved = needed;
+  });
+  return { uid, reserved };
+}
+
+// LLM 실패 시 예약된 크레딧 환불.
+async function refundCredits(uid, amount) {
+  if (!amount) return;
+  try {
+    await db.collection('users').doc(uid).update({
+      credits: admin.firestore.FieldValue.increment(amount)
+    });
+  } catch (e) { console.error('refund fail', e); }
+}
+
+function authErrorMessage(code) {
+  return ({
+    AUTH_REQUIRED: '로그인이 필요합니다.',
+    AUTH_INVALID: '로그인 정보가 만료됐어요. 다시 로그인해주세요.',
+    USER_NOT_FOUND: '사용자 정보를 찾을 수 없습니다.',
+    INSUFFICIENT_CREDITS: '크레딧이 부족합니다.'
+  })[code] || '인증/크레딧 확인에 실패했습니다.';
+}
 
 // ★ 구조화 출력용 tool 정의 (JSON.parse 대신 tool_use로 안전하게 객체 수신)
 // ★ mode별 스키마 분기: assignment만 의문문/접속사/P3/문단비율 필드 강제
@@ -556,11 +604,23 @@ async function callClaude(messages, tools, temperature, system, options = {}) {
 router.post('/analyze', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   console.log(`[${new Date().toISOString()}] /analyze 요청 IP: ${ip}`);
-  try {
-    const { mode, text } = req.body;
-    const lang = req.body.lang || 'ko';
-    if (!text || text.length < 5) return res.json({ error: '텍스트가 너무 짧습니다.' });
 
+  const { mode, text, idToken } = req.body;
+  const lang = req.body.lang || 'ko';
+  if (!text || text.length < 5) return res.status(400).json({ error: '텍스트가 너무 짧습니다.' });
+  if (text.length > 10000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 10,000자)' });
+
+  const needed = Math.ceil(text.length / 100);
+  const opType = mode === 'detect' ? 'detect' : 'humanize';
+
+  let reserved;
+  try {
+    reserved = await verifyAndReserveCredits(idToken, needed, opType);
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: authErrorMessage(e.message) });
+  }
+
+  try {
     // ★ 감지: tool_use로 구조화 응답 수신 (JSON.parse 실패 원천 차단)
     if (mode === 'detect') {
       const data = await callClaude(
@@ -632,20 +692,41 @@ router.post('/analyze', async (req, res) => {
     res.json({ ok: true, result, usage: data.usage, refineUsage });
 
   } catch (err) {
-    res.json({ error: err.message });
+    await refundCredits(reserved.uid, reserved.reserved);
+    console.error('/analyze LLM error:', err && err.message);
+    res.status(500).json({ error: '처리 중 오류가 발생했습니다.' });
   }
 });
 
 router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   console.log(`[${new Date().toISOString()}] /analyze-pdf 요청 IP: ${ip}`);
+
+  if (!req.file) return res.status(400).json({ error: 'PDF 파일이 없습니다.' });
+  if (req.file.mimetype !== 'application/pdf') {
+    return res.status(400).json({ error: 'PDF 파일만 업로드 가능합니다.' });
+  }
+
+  const mode = req.body.mode || 'detect';
+  const lang = req.body.lang || 'ko';
+  const idToken = req.body.idToken;
+  const needed = Math.ceil(req.file.size / 10240);
+  const opType = mode === 'detect' ? 'detect' : 'humanize';
+
+  let reserved;
   try {
-    if (!req.file) return res.json({ error: 'PDF 파일이 없습니다.' });
-    const mode = req.body.mode || 'detect';
-    const lang = req.body.lang || 'ko';
+    reserved = await verifyAndReserveCredits(idToken, needed, opType);
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: authErrorMessage(e.message) });
+  }
+
+  try {
     const pdfData = await pdfParse(req.file.buffer);
     const text = pdfData.text.trim();
-    if (!text || text.length < 5) return res.json({ error: 'PDF에서 텍스트를 추출할 수 없습니다.' });
+    if (!text || text.length < 5) {
+      await refundCredits(reserved.uid, reserved.reserved);
+      return res.status(400).json({ error: 'PDF에서 텍스트를 추출할 수 없습니다.' });
+    }
 
     const humanizeModePdf = req.body.humanizeMode || 'assignment';
     const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(humanizeModePdf, lang);
@@ -670,7 +751,9 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       extractedText: text.substring(0, 500)
     });
   } catch (err) {
-    res.json({ error: err.message });
+    await refundCredits(reserved.uid, reserved.reserved);
+    console.error('/analyze-pdf LLM error:', err && err.message);
+    res.status(500).json({ error: '처리 중 오류가 발생했습니다.' });
   }
 });
 

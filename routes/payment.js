@@ -15,22 +15,20 @@ router.post('/confirm-payment', async (req, res) => {
     return res.status(400).json({ error: "유효하지 않은 결제 금액입니다." });
   }
 
-  // Firebase ID Token으로 uid 서버 검증
-  let verifiedUid = uid;
-  if (idToken) {
-    try {
-      const decodedToken = await admin.auth().verifyIdToken(idToken);
-      verifiedUid = decodedToken.uid;
-      if (uid && uid !== verifiedUid) {
-        console.warn(`⚠️ UID 불일치: client=${uid}, token=${verifiedUid}`);
-      }
-    } catch (tokenErr) {
-      console.warn('⚠️ ID token 검증 실패:', tokenErr.message);
-    }
+  // Firebase ID Token 필수 검증 — fallback 없음
+  if (!idToken) {
+    return res.status(401).json({ error: '로그인이 필요합니다.' });
   }
-
-  if (!verifiedUid || verifiedUid === "undefined") {
-    return res.status(400).json({ error: "유저 UID 정보가 없습니다." });
+  let verifiedUid;
+  try {
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    verifiedUid = decoded.uid;
+  } catch (e) {
+    return res.status(401).json({ error: '로그인 정보가 만료됐어요. 다시 로그인 후 결제를 완료해주세요.' });
+  }
+  if (uid && uid !== verifiedUid) {
+    console.warn(`UID mismatch blocked: client=${uid}, token=${verifiedUid}`);
+    return res.status(403).json({ error: '사용자 정보가 일치하지 않습니다.' });
   }
 
   const secretKey = process.env.TOSS_SECRET_KEY;
