@@ -607,6 +607,10 @@ router.post('/analyze', async (req, res) => {
 
   const { mode, text, idToken } = req.body;
   const lang = req.body.lang || 'ko';
+  // 프런트 분할 호출 시 전달되는 직전 청크 말미 (문체 참고용, ≤300자 안전 가드)
+  const prevContext = typeof req.body.prevContext === 'string' && req.body.prevContext.trim()
+    ? req.body.prevContext.trim().slice(-300)
+    : '';
   if (!text || text.length < 5) return res.status(400).json({ error: '텍스트가 너무 짧습니다.' });
   if (text.length > 10000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 10,000자)' });
 
@@ -623,8 +627,11 @@ router.post('/analyze', async (req, res) => {
   try {
     // ★ 감지: tool_use로 구조화 응답 수신 (JSON.parse 실패 원천 차단)
     if (mode === 'detect') {
+      const detectUserContent = prevContext
+        ? `[앞 청크의 마지막 일부 — 문맥 참고용, 이 부분은 점수에 포함하지 말 것]\n${prevContext}\n\n[분석할 글]\n${text}`
+        : `[분석할 글]\n${text}`;
       const data = await callClaude(
-        [{ role: 'user', content: `[분석할 글]\n${text}` }],
+        [{ role: 'user', content: detectUserContent }],
         [DETECT_TOOL], undefined,
         getDetectSystem(lang),
         { model: MODEL, maxTokens: 1024, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
@@ -653,9 +660,12 @@ router.post('/analyze', async (req, res) => {
     const selectedMode = req.body.humanizeMode || 'assignment';
     const humanizeSystem = getHumanizeSystem(selectedMode, lang);
     const humanizeTool = buildHumanizeTool(selectedMode);
+    const prevContextBlock = prevContext
+      ? `[앞 청크의 마지막 일부 — 문체 연속성 참고용, 다시 변환하지 말 것]\n${prevContext}\n\n`
+      : '';
     const userContent = examples
-      ? `[재작성할 텍스트]\n${text}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
-      : `[재작성할 텍스트]\n${text}`;
+      ? `${prevContextBlock}[재작성할 텍스트]\n${text}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
+      : `${prevContextBlock}[재작성할 텍스트]\n${text}`;
     const inputParaCount = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
 
     const data = await callClaude(
