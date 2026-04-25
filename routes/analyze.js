@@ -428,7 +428,12 @@ function verifyCheckFields(result, mode, inputParaCount) {
       { re: /(생겼|있었|없었|됐|했|갔|왔|봤|만났|나왔|들어왔|받았|줬|보냈|썼)을때/, msg: '~을때→~을 때' },
       { re: /(할|갈|올|볼|쓸|줄|받을|만날|나올|들어올|시작할|끝낼|마칠)때(마다|부터|까지|에|는|도)?/, msg: '~할때→~할 때' },
       { re: /(초등학교|중학교|고등학교|대학교|학원)\s까지/, msg: '학교 까지→학교까지' },
-      { re: /(그때|이때|지금|나중|평소)\s까지/, msg: '~ 까지→~까지' }
+      { re: /(그때|이때|지금|나중|평소)\s까지/, msg: '~ 까지→~까지' },
+      { re: /전날밤/, msg: '전날밤→전날 밤' },
+      { re: /(어떻게|뭘|뭐|무엇을|왜|어디|어떤지|어찌|얼마나)\s*한건지/, msg: '한건지→한 건지' },
+      { re: /해야할/, msg: '해야할→해야 할' },
+      { re: /역효과\s였/, msg: '역효과 였습니다→역효과였습니다' },
+      { re: /(부작용|효과|결과|차이|변화)\s였/, msg: '~ 였습니다→~였습니다' }
     ];
     const spellIssues = spellingRules.filter(r => r.re.test(text)).map(r => r.msg);
     if (spellIssues.length > (result.spellingIssues?.length || 0)) {
