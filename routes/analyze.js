@@ -476,6 +476,30 @@ function verifyCheckFields(result, mode, inputParaCount) {
   return result;
 }
 
+// 2-pass refine 게이트: critical 위반 1건이거나 minor 위반이 2건 이상일 때만 재호출.
+// selfCheckPass(14개+ 임계 중 1건만 어긋나도 false)를 그대로 트리거로 쓰면 비용 부담이 커서 분리.
+function shouldRefine(result, mode) {
+  const critical =
+    (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4))
+    || (result.listOfThreeCount || 0) >= 1
+    || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
+    || (mode === 'assignment' && !!result.paragraphCountMismatch)
+    || (mode === 'assignment' && result.lastSentenceIsReassurance === true);
+  if (critical) return { refine: true, reason: 'critical' };
+
+  let minor = 0;
+  if (typeof result.shortSentenceRatio === 'number' && result.shortSentenceRatio < 0.15) minor++;
+  if (typeof result.hedgeRatio === 'number' && (result.hedgeRatio < 0.07 || result.hedgeRatio > 0.18)) minor++;
+  if ((result.consecutiveNounSubjectMax || 0) >= 4) minor++;
+  if (mode === 'assignment') {
+    if (typeof result.conjunctionStartRatio === 'number' && result.conjunctionStartRatio > 0.20) minor++;
+    if (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.40) minor++;
+    if ((result.sameEndingRun || 0) >= 4) minor++;
+    if ((result.similarLengthRun || 0) >= 4) minor++;
+  }
+  return { refine: minor >= 3, reason: minor >= 3 ? `minor x${minor}` : 'pass' };
+}
+
 // 셀프체크 수치를 임계와 대조해 위반된 항목을 사람이 읽을 문장으로 반환
 function collectFailedFields(r, mode) {
   const failed = [];
@@ -677,11 +701,12 @@ router.post('/analyze', async (req, res) => {
     let result = extractToolResult(data, humanizeTool.name);
     verifyCheckFields(result, selectedMode, inputParaCount);
 
-    // ★ 2-pass 폴백: selfCheckPass=false일 때만 위반 항목을 명시해 재수정
+    // ★ 2-pass 폴백: critical 위반 1건 또는 minor 2건+일 때만 재호출 (비용 절약)
     let refineUsage = null;
-    if (result.selfCheckPass === false) {
+    const refineDecision = shouldRefine(result, selectedMode);
+    if (refineDecision.refine) {
       const failed = collectFailedFields(result, selectedMode);
-      console.log(`⚠️ selfCheckPass=false, 2-pass 폴백 실행. 위반: ${failed.join(' | ')}`);
+      console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
       const refineUser = `[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
       const refineData = await callClaude(
         [{ role: 'user', content: refineUser }],

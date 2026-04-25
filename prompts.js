@@ -31,9 +31,13 @@ const DETECT_SYSTEM = {
 8. 접속사의 등간격 배치: "또한", "그러나", "한편", "특히" 같은 접속사가 마치 규칙처럼 일정한 간격으로 반복 등장함.
 
 # [분야별 정밀 검사] (글의 문체와 내용을 보고 분야를 자동 판별하여 해당 기준을 적용하라):
-- 자소서/과제: 세련된 한자어보다 상황 중심적인 쉬운 단어로 자신의 경험을 투박하게 서술했는가?
-- 블로그: 가독성을 위한 여백, 개인적 감상(단점 언급 등), 열린 결말이 포함되었는가?
-- 논문: "혁신적" 같은 단어 대신 "한계가 존재함", "해석의 여지가 있음" 등 방어적이고 비판적 태도를 유지하는가?
+
+- 자소서/과제 — 인간 시그널: 세련된 한자어보다 상황 중심적인 쉬운 단어로 자신의 경험을 투박하게 서술했는가? 사건의 시점·장소·인물이 구체적으로 박혀 있는가(지난 학기, 발표 전날 밤, 조원 4명, 새벽 4시 등)? 격식체를 유지하다가도 "솔직히", "막상", "돌이켜보면" 같은 일상 부사가 자연스럽게 끼어드는가? 자신의 부족함이나 실패를 드러내는 한 줄이 있는가? 정리된 결론이 아니라 미해결된 의문이나 관찰로 끝나는가?
+- 자소서/과제 — AI 시그널: "본 보고서에서는 ~을 다루고자 한다", "이번 과제를 통해 많은 것을 배웠습니다", "유익한 시간이었습니다", "~의 중요성을 깨달았습니다" 같은 학생용 GPT-ism이 보이는가? "열정·끊임없는·도전 정신·성장의 발판·소중한 경험" 같은 자소서 GPT-ism이 보이는가? 모든 문단이 같은 길이·같은 호흡으로 정돈되어 있는가?
+- 블로그 — 인간 시그널: 모바일 가독성을 위한 여백(짧은 문단·빈 줄)이 자연스러운가? "~더라고요", "~죠", "~해요" 같은 친근한 종결어미를 쓰면서도 단조롭지 않은가? 단점이나 아쉬운 점("주차가 헬이었다", "이 가격에 또 갈지는 고민") 같은 솔직한 사견이 들어 있는가? "..." "—" 같은 호흡 표지나 의태어("훅", "확", "슬쩍")가 적절히 섞여 있는가? 깔끔한 결론 대신 열린 마무리인가?
+- 블로그 — AI 시그널: "안녕하세요~", "~에 대해 알아보자", "~에 대해 정리해봤어요" 같은 정형 도입부, "도움이 되셨길 바랍니다" 같은 정형 마무리, "첫째 둘째 셋째" 같은 번호 나열, "완벽한·최고의·반드시 알아야 할" 같은 과장 수식어가 보이는가?
+- 논문 — 인간 시그널: "혁신적·포괄적·필수적" 같은 단어 대신 "한계가 존재함", "해석의 여지가 있음", "통제 변수의 민감도에 따른 변동성" 등 방어적·비판적 어조를 유지하는가? 구체적 수치(p-value, 표본 크기, 오차 범위, 모델 버전, 라이브러리 이름)가 박혀 있는가? 자기 결과의 한계나 예외 케이스를 먼저 언급하는가?
+- 논문 — AI 시그널: "고찰하다·탐구하다·살펴보고자 한다·주지하다시피·시사하는 바가 크다", "~라고 할 수 있다·~라고 볼 수 있다" 같은 표현이 반복되는가? 모든 문단이 "도입-전개-결론" 구조로 균질하게 정돈되어 있는가?
 
 # [판정 가이드라인]:
 - 위 '인간 작성물'의 특징이 3개 이상 발견되면 AI 확률을 10% 이하로 급격히 낮춰라.
@@ -61,6 +65,15 @@ const DETECT_SYSTEM = {
 3. Overuse of vague, polished words: "crucial", "significant", "multifaceted", "comprehensive", "foster", "delve", "navigate."
 4. No emotion or criticism — purely neutral information listing.
 5. Excessive structure: perfect outline, repeated patterns, flawlessly organized prose.
+
+# [Field-Specific Precision Checks] (auto-detect the field from style/content and apply the matching criteria):
+
+- Personal Statement / Assignments — Human signals: Plain, situation-driven words instead of polished corporate jargon? Concrete time/place/people anchors ("last semester", "the night before the demo", "4 teammates", "4 a.m.")? Casual adverbs slipping into formal prose ("honestly", "as it turned out", "looking back")? At least one line acknowledging personal failure, doubt, or struggle? An open or unresolved ending instead of a tidy summary?
+- Personal Statement / Assignments — AI signals: Generic openings like "In today's rapidly evolving world", "This report aims to discuss", or "I have learned a lot through this assignment"? Stock phrases like "passionate about", "thrives in challenges", "growth mindset", "valuable experience"? Every paragraph the same length and cadence?
+- Blog — Human signals: Short paragraphs with whitespace for mobile readability? Casual endings without monotony? At least one honest negative ("parking was a nightmare", "not sure I'd pay this again")? Pause markers ("...", "—") and onomatopoeia/colloquialisms scattered? An open ending instead of a clean wrap-up?
+- Blog — AI signals: Boilerplate intros like "Welcome to my blog", "Let's dive into", or wrap-ups like "I hope this was helpful"? Numbered lists ("First, Second, Third")? Hyperbolic modifiers ("perfect", "the best", "must-know")?
+- Academic / Research — Human signals: Defensive hedging ("limitations exist", "open to interpretation", "sensitive to control variables") instead of "innovative/comprehensive/essential"? Concrete numbers (p-values, sample sizes, error margins, library/model versions)? Mentioning limits or edge cases of the author's own results before conclusions?
+- Academic / Research — AI signals: Repeated use of "delve", "navigate" (figurative), "pivotal", "multifaceted", "robust", "seamless", "stands as a testament"? Every paragraph following the same intro-body-conclusion mold?
 
 # [Scoring Guidelines]:
 - If 3 or more human-writing traits are found, sharply lower AI probability to 10% or below.
