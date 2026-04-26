@@ -51,13 +51,89 @@ async function refundCredits(uid, amount) {
   } catch (e) { console.error('refund fail', e); }
 }
 
+// 정기결제(Pro 탭) 쿠폰 검증 + 1회 차감. 결제는 텍스트 길이 1회당 쿠폰 1개.
+const SUB_CHAR_LIMITS = { '1000': 1000, '5000': 5000, '10000': 10000, 'unlimited': -1 };
+
+async function verifyAndReserveCoupon(idToken, textLength, opType) {
+  if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 });
+  let decoded;
+  try { decoded = await admin.auth().verifyIdToken(idToken); }
+  catch { throw Object.assign(new Error('AUTH_INVALID'), { status: 401 }); }
+  const uid = decoded.uid;
+  const userRef = db.collection('users').doc(uid);
+
+  let billingTier = null;
+  await db.runTransaction(async (t) => {
+    const snap = await t.get(userRef);
+    if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+    const d = snap.data();
+    const sub = d.subscription;
+    if (!sub) throw Object.assign(new Error('NO_SUBSCRIPTION'), { status: 403 });
+
+    const nextMs = sub.nextBillingAt?.toMillis ? sub.nextBillingAt.toMillis() : 0;
+    const valid = sub.status === 'active' || (sub.status === 'cancelled' && nextMs > Date.now());
+    if (!valid) throw Object.assign(new Error('SUBSCRIPTION_INACTIVE'), { status: 403 });
+
+    const tier = sub.tier;
+    billingTier = tier;
+    const charLimit = SUB_CHAR_LIMITS[tier];
+    if (charLimit === undefined) throw Object.assign(new Error('INVALID_TIER'), { status: 500 });
+    if (charLimit !== -1 && textLength > charLimit) {
+      throw Object.assign(new Error('COUPON_LIMIT_EXCEEDED'), { status: 400, charLimit });
+    }
+
+    if (tier === 'unlimited') {
+      // unlimited는 잔량은 차감하지 않지만 used 카운터는 증가시켜 환불 자격 판정에 활용
+      t.update(userRef, { 'coupon.used': admin.firestore.FieldValue.increment(1) });
+      const hist = userRef.collection('couponHistory').doc();
+      t.set(hist, {
+        type: 'use', tier, amount: 0, remaining: -1,
+        mode: opType, textLength,
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      return;
+    }
+
+    const remaining = d.coupon?.remaining ?? 0;
+    if (remaining <= 0) throw Object.assign(new Error('NO_COUPON'), { status: 402 });
+    const newRemaining = remaining - 1;
+    t.update(userRef, {
+      'coupon.remaining': newRemaining,
+      'coupon.used': admin.firestore.FieldValue.increment(1)
+    });
+    const hist = userRef.collection('couponHistory').doc();
+    t.set(hist, {
+      type: 'use', tier, amount: -1, remaining: newRemaining,
+      mode: opType, textLength,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+  });
+
+  return { uid, billingMode: 'coupon', tier: billingTier };
+}
+
+// LLM 실패 시 쿠폰 1개 복구. unlimited는 remaining은 안 건드리고 used만 복구.
+async function refundCoupon(reservation) {
+  if (!reservation || reservation.billingMode !== 'coupon') return;
+  try {
+    const patch = { 'coupon.used': admin.firestore.FieldValue.increment(-1) };
+    if (reservation.tier !== 'unlimited') patch['coupon.remaining'] = admin.firestore.FieldValue.increment(1);
+    await db.collection('users').doc(reservation.uid).update(patch);
+  } catch (e) { console.error('coupon refund fail', e); }
+}
+
 function authErrorMessage(code) {
   return ({
     AUTH_REQUIRED: '로그인이 필요합니다.',
     AUTH_INVALID: '로그인 정보가 만료됐어요. 다시 로그인해주세요.',
     USER_NOT_FOUND: '사용자 정보를 찾을 수 없습니다.',
-    INSUFFICIENT_CREDITS: '크레딧이 부족합니다.'
-  })[code] || '인증/크레딧 확인에 실패했습니다.';
+    INSUFFICIENT_CREDITS: '크레딧이 부족합니다.',
+    NO_SUBSCRIPTION: 'Pro 구독이 필요합니다.',
+    SUBSCRIPTION_INACTIVE: '구독이 만료되었거나 활성 상태가 아닙니다.',
+    NO_COUPON: '이번 사이클의 쿠폰을 모두 사용했습니다. 다음 결제일에 갱신됩니다.',
+    COUPON_LIMIT_EXCEEDED: '현재 구독 티어의 글자 수 한도를 초과했습니다.',
+    INVALID_TIER: '구독 정보가 올바르지 않습니다. 관리자에 문의해주세요.'
+  })[code] || '인증/결제 확인에 실패했습니다.';
 }
 
 // ★ 구조화 출력용 tool 정의 (JSON.parse 대신 tool_use로 안전하게 객체 수신)
@@ -636,21 +712,33 @@ router.post('/analyze', async (req, res) => {
 
   const { mode, text, idToken } = req.body;
   const lang = req.body.lang || 'ko';
+  const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
   // 프런트 분할 호출 시 전달되는 직전 청크 말미 (문체 참고용, ≤300자 안전 가드)
   const prevContext = typeof req.body.prevContext === 'string' && req.body.prevContext.trim()
     ? req.body.prevContext.trim().slice(-300)
     : '';
   if (!text || text.length < 5) return res.status(400).json({ error: '텍스트가 너무 짧습니다.' });
-  if (text.length > 10000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 10,000자)' });
+  // 글자 수 상한: 크레딧 모드 10,000자, 쿠폰 모드 50,000자(무제한 티어용 안전 캡)
+  const HARD_MAX = billingMode === 'coupon' ? 50000 : 10000;
+  if (text.length > HARD_MAX) {
+    return res.status(400).json({ error: `텍스트가 너무 깁니다. (최대 ${HARD_MAX.toLocaleString()}자)` });
+  }
 
   const needed = Math.ceil(text.length / 100);
   const opType = mode === 'detect' ? 'detect' : 'humanize';
 
   let reserved;
   try {
-    reserved = await verifyAndReserveCredits(idToken, needed, opType);
+    if (billingMode === 'coupon') {
+      reserved = await verifyAndReserveCoupon(idToken, text.length, opType);
+    } else {
+      reserved = await verifyAndReserveCredits(idToken, needed, opType);
+    }
   } catch (e) {
-    return res.status(e.status || 500).json({ error: authErrorMessage(e.message) });
+    return res.status(e.status || 500).json({
+      error: authErrorMessage(e.message),
+      ...(e.charLimit !== undefined ? { charLimit: e.charLimit } : {})
+    });
   }
 
   try {
@@ -732,7 +820,11 @@ router.post('/analyze', async (req, res) => {
     res.json({ ok: true, result, usage: data.usage, refineUsage });
 
   } catch (err) {
-    await refundCredits(reserved.uid, reserved.reserved);
+    if (reserved?.billingMode === 'coupon') {
+      await refundCoupon(reserved);
+    } else if (reserved) {
+      await refundCredits(reserved.uid, reserved.reserved);
+    }
     console.error('/analyze LLM error:', err && err.message);
     res.status(500).json({ error: '처리 중 오류가 발생했습니다.' });
   }
@@ -750,23 +842,38 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   const mode = req.body.mode || 'detect';
   const lang = req.body.lang || 'ko';
   const idToken = req.body.idToken;
-  const needed = Math.ceil(req.file.size / 10240);
+  const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
   const opType = mode === 'detect' ? 'detect' : 'humanize';
 
   let reserved;
+  let pdfText;
   try {
-    reserved = await verifyAndReserveCredits(idToken, needed, opType);
+    const pdfData = await pdfParse(req.file.buffer);
+    pdfText = pdfData.text.trim();
   } catch (e) {
-    return res.status(e.status || 500).json({ error: authErrorMessage(e.message) });
+    return res.status(400).json({ error: 'PDF 파싱에 실패했습니다.' });
+  }
+  if (!pdfText || pdfText.length < 5) {
+    return res.status(400).json({ error: 'PDF에서 텍스트를 추출할 수 없습니다.' });
+  }
+
+  const needed = Math.ceil(req.file.size / 10240);
+
+  try {
+    if (billingMode === 'coupon') {
+      reserved = await verifyAndReserveCoupon(idToken, pdfText.length, opType);
+    } else {
+      reserved = await verifyAndReserveCredits(idToken, needed, opType);
+    }
+  } catch (e) {
+    return res.status(e.status || 500).json({
+      error: authErrorMessage(e.message),
+      ...(e.charLimit !== undefined ? { charLimit: e.charLimit } : {})
+    });
   }
 
   try {
-    const pdfData = await pdfParse(req.file.buffer);
-    const text = pdfData.text.trim();
-    if (!text || text.length < 5) {
-      await refundCredits(reserved.uid, reserved.reserved);
-      return res.status(400).json({ error: 'PDF에서 텍스트를 추출할 수 없습니다.' });
-    }
+    const text = pdfText;
 
     const humanizeModePdf = req.body.humanizeMode || 'assignment';
     const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(humanizeModePdf, lang);
@@ -791,7 +898,11 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       extractedText: text.substring(0, 500)
     });
   } catch (err) {
-    await refundCredits(reserved.uid, reserved.reserved);
+    if (reserved?.billingMode === 'coupon') {
+      await refundCoupon(reserved);
+    } else if (reserved) {
+      await refundCredits(reserved.uid, reserved.reserved);
+    }
     console.error('/analyze-pdf LLM error:', err && err.message);
     res.status(500).json({ error: '처리 중 오류가 발생했습니다.' });
   }

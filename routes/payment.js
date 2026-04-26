@@ -125,9 +125,19 @@ async function verifyToken(idToken) {
   }
 }
 
-// 환불 요청 (사용자용)
+// 컬렉션 분기 헬퍼
+function getOrderRef(kind, orderId) {
+  return kind === 'subscription'
+    ? db.collection('subscriptionOrders').doc(orderId)
+    : db.collection('orders').doc(orderId);
+}
+
+const REFUND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+// 환불 요청 (사용자용) — kind: 'order' (기본, 크레딧 일회성) | 'subscription' (정기결제)
 router.post('/request-refund', async (req, res) => {
-  const { orderId, idToken, cancelReason } = req.body;
+  const { orderId, idToken, cancelReason, kind: rawKind } = req.body;
+  const kind = rawKind === 'sub' || rawKind === 'subscription' ? 'subscription' : 'order';
 
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
@@ -137,7 +147,7 @@ router.post('/request-refund', async (req, res) => {
   }
 
   try {
-    const orderRef = db.collection('orders').doc(orderId);
+    const orderRef = getOrderRef(kind, orderId);
     const orderSnap = await orderRef.get();
 
     if (!orderSnap.exists) return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
@@ -148,13 +158,38 @@ router.post('/request-refund', async (req, res) => {
     if (order.status === 'refunded') return res.status(400).json({ error: '이미 환불 완료된 주문입니다.' });
     if (order.status !== 'paid') return res.status(400).json({ error: '환불할 수 없는 주문 상태입니다.' });
 
+    // 정기결제 환불 자격: 결제일 7일 이내 + 이번 사이클 쿠폰 미사용
+    if (kind === 'subscription') {
+      const approvedMs = order.approvedAt?.toMillis ? order.approvedAt.toMillis()
+        : (order.requestedAt?.toMillis ? order.requestedAt.toMillis() : 0);
+      if (!approvedMs || Date.now() - approvedMs > REFUND_WINDOW_MS) {
+        return res.status(400).json({ error: '결제일로부터 7일이 지나 환불할 수 없습니다.' });
+      }
+      // 사용자 doc에서 현재 사이클 쿠폰 사용 여부 확인
+      const userSnap = await db.collection('users').doc(uid).get();
+      const coupon = userSnap.exists ? userSnap.data().coupon : null;
+      const sub = userSnap.exists ? userSnap.data().subscription : null;
+      const subCycleMs = sub?.cycleStartedAt?.toMillis ? sub.cycleStartedAt.toMillis() : 0;
+      // 환불하려는 결제가 "현재 사이클"에 해당하는 경우에만 미사용 검증
+      if (subCycleMs && Math.abs(subCycleMs - approvedMs) < 60 * 1000) {
+        const used = coupon?.used || 0;
+        if (used > 0) {
+          return res.status(400).json({ error: '이번 사이클 쿠폰을 이미 사용해 환불할 수 없습니다.' });
+        }
+      } else {
+        // 과거 사이클 결제는 환불 불가 (해당 사이클 사용 여부를 더 이상 추적할 수 없음)
+        return res.status(400).json({ error: '과거 사이클의 정기결제는 환불할 수 없습니다.' });
+      }
+    }
+
     await orderRef.update({
       status: 'refund_requested',
       cancelReason: cancelReason.trim(),
+      kind,
       refundRequestedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    console.log(`📋 환불 요청: ${orderId} (사유: ${cancelReason.trim()})`);
+    console.log(`📋 환불 요청 (${kind}): ${orderId} (사유: ${cancelReason.trim()})`);
     res.json({ ok: true, message: '환불 요청이 접수되었습니다.' });
   } catch (err) {
     console.error('❌ 환불 요청 에러:', err);
@@ -164,7 +199,8 @@ router.post('/request-refund', async (req, res) => {
 
 // 환불 승인 (관리자용)
 router.post('/approve-refund', async (req, res) => {
-  const { orderId, idToken } = req.body;
+  const { orderId, idToken, kind: rawKind } = req.body;
+  const kind = rawKind === 'sub' || rawKind === 'subscription' ? 'subscription' : 'order';
 
   const adminUid = await verifyToken(idToken);
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요합니다.' });
@@ -172,7 +208,7 @@ router.post('/approve-refund', async (req, res) => {
   if (!orderId) return res.status(400).json({ error: '주문번호가 없습니다.' });
 
   try {
-    const orderRef = db.collection('orders').doc(orderId);
+    const orderRef = getOrderRef(kind, orderId);
     const orderSnap = await orderRef.get();
 
     if (!orderSnap.exists) return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
@@ -207,37 +243,59 @@ router.post('/approve-refund', async (req, res) => {
       });
     }
 
-    // 토스 환불 성공 → Firestore 트랜잭션으로 크레딧 차감 + 상태 변경
     const userRef = db.collection('users').doc(order.uid);
 
-    await db.runTransaction(async (transaction) => {
-      const userSnap = await transaction.get(userRef);
-      const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
-      const newCredits = Math.max(0, currentCredits - order.safeCredits);
-
-      transaction.update(orderRef, {
-        status: 'refunded',
-        refundedAt: admin.firestore.FieldValue.serverTimestamp(),
-        refundedBy: adminUid
+    if (kind === 'subscription') {
+      // 정기결제 환불: 구독 즉시 만료 + 쿠폰 0 + plan 강등
+      await db.runTransaction(async (t) => {
+        t.update(orderRef, {
+          status: 'refunded',
+          refundedAt: admin.firestore.FieldValue.serverTimestamp(),
+          refundedBy: adminUid
+        });
+        t.update(userRef, {
+          'subscription.status': 'refunded',
+          'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
+          'plan': 'free',
+          'coupon.remaining': 0,
+          'coupon.used': 0
+        });
+        const histRef = userRef.collection('couponHistory').doc();
+        t.set(histRef, {
+          type: 'refund', tier: order.tier, amount: 0, remaining: 0,
+          orderId, createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
       });
+      console.log(`✅ 정기결제 환불 완료: ${orderId} (uid=${order.uid}, 관리자=${adminUid})`);
+    } else {
+      // 크레딧 환불 (기존 로직)
+      await db.runTransaction(async (transaction) => {
+        const userSnap = await transaction.get(userRef);
+        const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
+        const newCredits = Math.max(0, currentCredits - order.safeCredits);
 
-      transaction.update(userRef, {
-        credits: newCredits
+        transaction.update(orderRef, {
+          status: 'refunded',
+          refundedAt: admin.firestore.FieldValue.serverTimestamp(),
+          refundedBy: adminUid
+        });
+
+        transaction.update(userRef, { credits: newCredits });
+
+        const historyRef = db.collection('users').doc(order.uid)
+          .collection('creditHistory').doc();
+        transaction.set(historyRef, {
+          type: 'refund',
+          used: 0,
+          amount: -order.safeCredits,
+          remaining: newCredits,
+          orderId: orderId,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
       });
+      console.log(`✅ 크레딧 환불 완료: ${orderId} (${order.safeCredits}크레딧 차감, 관리자: ${adminUid})`);
+    }
 
-      const historyRef = db.collection('users').doc(order.uid)
-        .collection('creditHistory').doc();
-      transaction.set(historyRef, {
-        type: 'refund',
-        used: 0,
-        amount: -order.safeCredits,
-        remaining: newCredits,
-        orderId: orderId,
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-    });
-
-    console.log(`✅ 환불 완료: ${orderId} (${order.safeCredits}크레딧 차감, 관리자: ${adminUid})`);
     res.json({ ok: true, message: '환불이 완료되었습니다.' });
   } catch (err) {
     console.error('❌ 환불 승인 에러:', err);
@@ -247,7 +305,8 @@ router.post('/approve-refund', async (req, res) => {
 
 // 환불 거절 (관리자용)
 router.post('/reject-refund', async (req, res) => {
-  const { orderId, idToken, rejectReason } = req.body;
+  const { orderId, idToken, rejectReason, kind: rawKind } = req.body;
+  const kind = rawKind === 'sub' || rawKind === 'subscription' ? 'subscription' : 'order';
 
   const adminUid = await verifyToken(idToken);
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요합니다.' });
@@ -258,7 +317,7 @@ router.post('/reject-refund', async (req, res) => {
   }
 
   try {
-    const orderRef = db.collection('orders').doc(orderId);
+    const orderRef = getOrderRef(kind, orderId);
     const orderSnap = await orderRef.get();
 
     if (!orderSnap.exists) return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
@@ -275,7 +334,7 @@ router.post('/reject-refund', async (req, res) => {
       rejectedBy: adminUid
     });
 
-    console.log(`❌ 환불 거절: ${orderId} (사유: ${rejectReason.trim()}, 관리자: ${adminUid})`);
+    console.log(`❌ 환불 거절 (${kind}): ${orderId} (사유: ${rejectReason.trim()}, 관리자: ${adminUid})`);
     res.json({ ok: true, message: '환불 요청이 거절되었습니다.' });
   } catch (err) {
     console.error('❌ 환불 거절 에러:', err);
