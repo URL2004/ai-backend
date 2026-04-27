@@ -751,7 +751,7 @@ router.post('/analyze', async (req, res) => {
         [{ role: 'user', content: detectUserContent }],
         [DETECT_TOOL], undefined,
         getDetectSystem(lang),
-        { model: MODEL, maxTokens: 1024, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
+        { model: MODEL, maxTokens: 2048, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
       );
       const result = extractToolResult(data, DETECT_TOOL.name);
       return res.json({ ok: true, result, usage: data.usage });
@@ -880,7 +880,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
     const activeTool = mode === 'detect' ? DETECT_TOOL : buildHumanizeTool(humanizeModePdf);
     const pdfOptions = mode === 'detect'
-      ? { model: MODEL, maxTokens: 1024, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
+      ? { model: MODEL, maxTokens: 2048, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
       : { maxTokens: 16384, toolChoice: { type: 'tool', name: activeTool.name } };
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
