@@ -557,8 +557,8 @@ function verifyCheckFields(result, mode, inputParaCount) {
   return result;
 }
 
-// 2-pass refine 게이트: critical 위반 1건이거나 minor 위반이 2건 이상일 때만 재호출.
-// selfCheckPass(14개+ 임계 중 1건만 어긋나도 false)를 그대로 트리거로 쓰면 비용 부담이 커서 분리.
+// 2-pass refine 게이트: critical 위반 1건이거나 minor 위반이 5건 이상일 때만 재호출.
+// minor refine이 자주 발동하면 모델이 "룰 더 충족하는 방향"으로 다듬어 정형성이 짙어진다 → 임계 완화.
 function shouldRefine(result, mode) {
   const critical =
     (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4))
@@ -578,7 +578,7 @@ function shouldRefine(result, mode) {
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
   }
-  return { refine: minor >= 3, reason: minor >= 3 ? `minor x${minor}` : 'pass' };
+  return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
 }
 
 // 셀프체크 수치를 임계와 대조해 위반된 항목을 사람이 읽을 문장으로 반환
@@ -800,7 +800,7 @@ router.post('/analyze', async (req, res) => {
     if (refineDecision.refine) {
       const failed = collectFailedFields(result, selectedMode);
       console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
-      const refineUser = `[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
+      const refineUser = `[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형을 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
       const refineData = await callClaude(
         [{ role: 'user', content: refineUser }],
         [humanizeTool], 0.9,
