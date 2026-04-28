@@ -263,8 +263,20 @@ function extractToolResult(data, toolName) {
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
 //   assignment 모드는 접속사 시작 비율/P3 마지막 문장/주제어 빈도/문단 비율까지 서버에서 추가 실측.
-function verifyCheckFields(result, mode, inputParaCount) {
+function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
   const text = result.outputText || '';
+
+  // 분량 90% 보장 실측: 출력 길이 / 원문 길이 (공백 제외 기준 통일)
+  if (typeof inputCharLen === 'number' && inputCharLen > 0) {
+    const outLen = text.replace(/\s+/g, '').length;
+    const ratio = outLen / inputCharLen;
+    result.lengthRatio = Number(ratio.toFixed(3));
+    if (ratio < 0.9) {
+      result.lengthShortfall = { input: inputCharLen, output: outLen, ratio: result.lengthRatio };
+    } else {
+      result.lengthShortfall = null;
+    }
+  }
 
   // 1) 3개 이상 나열: 콤마로 묶인 3요소 (한/영 모두)
   const commaListRe = /[가-힣A-Za-z0-9]+\s*,\s*[가-힣A-Za-z0-9]+\s*,\s*[가-힣A-Za-z0-9]+/g;
@@ -552,7 +564,8 @@ function verifyCheckFields(result, mode, inputParaCount) {
       || (result.longShortAdjacencyCount || 0) < 1
       || (result.sameEndingRun || 0) >= 3
       || (result.similarLengthRun || 0) >= 3
-      || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0);
+      || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
+      || !!result.lengthShortfall;
   }
 
   const recomputedPass = !violations;
@@ -576,7 +589,8 @@ function shouldRefine(result, mode) {
     || (result.listOfThreeCount || 0) >= 1
     || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
     || (mode === 'assignment' && !!result.paragraphCountMismatch)
-    || (mode === 'assignment' && result.lastSentenceIsReassurance === true);
+    || (mode === 'assignment' && result.lastSentenceIsReassurance === true)
+    || !!result.lengthShortfall;
   if (critical) return { refine: true, reason: 'critical' };
 
   let minor = 0;
@@ -601,6 +615,10 @@ function collectFailedFields(r, mode) {
   }
   if (r.listOfThreeCount >= 1) {
     failed.push(`3개 이상 나열 ${r.listOfThreeCount}건(규칙 8, AI 시그니처) — 별도 문장으로 분리`);
+  }
+  if (r.lengthShortfall) {
+    const pct = (r.lengthShortfall.ratio * 100).toFixed(0);
+    failed.push(`분량 부족 ${pct}% (원문 ${r.lengthShortfall.input}자 → 출력 ${r.lengthShortfall.output}자, 최소 90% 보장) — 빠뜨린 원문 디테일·예시·근거를 복원해서 분량을 늘려라. 압축·요약 금지.`);
   }
   if (r.consecutiveNounSubjectMax >= 3) {
     failed.push(`명사 주어 ${r.consecutiveNounSubjectMax}연속(규칙 9) — 중간 문장을 부사/접속사/지시어로 시작`);
@@ -795,6 +813,7 @@ router.post('/analyze', async (req, res) => {
       ? `${prevContextBlock}[재작성할 텍스트]\n${text}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
       : `${prevContextBlock}[재작성할 텍스트]\n${text}`;
     const inputParaCount = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
+    const inputCharLen = text.replace(/\s+/g, '').length;
 
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
@@ -803,7 +822,7 @@ router.post('/analyze', async (req, res) => {
       { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
     );
     let result = extractToolResult(data, humanizeTool.name);
-    verifyCheckFields(result, selectedMode, inputParaCount);
+    verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
 
     // ★ 2-pass 폴백: critical 위반 1건 또는 minor 2건+일 때만 재호출 (비용 절약)
     let refineUsage = null;
@@ -819,7 +838,7 @@ router.post('/analyze', async (req, res) => {
         { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
       );
       result = extractToolResult(refineData, humanizeTool.name);
-      verifyCheckFields(result, selectedMode, inputParaCount);
+      verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
       refineUsage = refineData.usage;
       if (result.selfCheckPass === false) {
         console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
