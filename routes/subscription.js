@@ -346,16 +346,26 @@ async function runProcessDue(internalKey) {
 router.post('/subscription/process-due', async (req, res) => {
   const { internalKey } = req.body;
   if (internalKey !== process.env.CRON_SECRET) return res.status(403).json({ error: 'forbidden' });
-  const results = await runProcessDue(internalKey);
-  res.json({ ok: true, ...results });
+  try {
+    const results = await runProcessDue(internalKey);
+    res.json({ ok: true, ...results });
+  } catch (e) {
+    console.error('❌ process-due fail:', e?.message, e?.stack);
+    res.status(500).json({ error: 'process-due failed', detail: e?.message || String(e) });
+  }
 });
 
 // GET 진입점 (Render Cron Job 셸 인용 회피용 — 쿼리스트링 인증)
 router.get('/subscription/process-due', async (req, res) => {
   const key = req.query.key;
   if (key !== process.env.CRON_SECRET) return res.status(403).json({ error: 'forbidden' });
-  const results = await runProcessDue(key);
-  res.json({ ok: true, ...results });
+  try {
+    const results = await runProcessDue(key);
+    res.json({ ok: true, ...results });
+  } catch (e) {
+    console.error('❌ process-due fail:', e?.message, e?.stack);
+    res.status(500).json({ error: 'process-due failed', detail: e?.message || String(e) });
+  }
 });
 
 // === 4) 사용자 취소 ===
