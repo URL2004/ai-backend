@@ -41,6 +41,16 @@ async function tossChargeBilling({ billingKey, customerKey, amount, orderId, ord
   return { ok: res.ok, status: res.status, data: await res.json() };
 }
 
+async function tossDeleteBillingKey(billingKey) {
+  try {
+    const res = await fetch(`https://api.tosspayments.com/v1/billing/${encodeURIComponent(billingKey)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Basic ${tossBasicToken()}` }
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
 async function verifyToken(idToken) {
   if (!idToken) return null;
   try {
@@ -222,7 +232,7 @@ router.post('/subscription/charge', async (req, res) => {
   const orderSnap = await db.collection('subscriptionOrders').doc(orderId).get();
   if (orderSnap.exists) return res.json({ ok: true, deduped: true });
 
-  const charged = await tossChargeBilling({
+  let charged = await tossChargeBilling({
     billingKey: sub.billingKey,
     customerKey: sub.customerKey,
     amount: plan.amount,
@@ -230,8 +240,21 @@ router.post('/subscription/charge', async (req, res) => {
     orderName: plan.name
   });
 
+  // 카드사 일시 오류 대비 1회 재시도 (1.5초 후)
   if (!charged.ok) {
-    console.error(`❌ 정기결제 실패 uid=${uid}:`, charged.data);
+    console.warn(`⚠️ 정기결제 1차 실패 → 재시도 uid=${uid}:`, charged.data?.code);
+    await new Promise(r => setTimeout(r, 1500));
+    charged = await tossChargeBilling({
+      billingKey: sub.billingKey,
+      customerKey: sub.customerKey,
+      amount: plan.amount,
+      orderId,
+      orderName: plan.name
+    });
+  }
+
+  if (!charged.ok) {
+    console.error(`❌ 정기결제 최종 실패 uid=${uid}:`, charged.data);
     await userRef.update({
       'subscription.status': 'past_due',
       'plan': 'free'
@@ -306,8 +329,11 @@ router.post('/subscription/process-due', async (req, res) => {
 
   const batch = db.batch();
   for (const doc of cancelledSnap.docs) {
+    const sub = doc.data().subscription;
+    if (sub?.billingKey) await tossDeleteBillingKey(sub.billingKey);
     batch.update(doc.ref, {
       'subscription.status': 'expired',
+      'subscription.billingKey': null,
       'plan': 'free',
       'coupon.remaining': 0
     });
@@ -377,6 +403,65 @@ router.get('/subscription/status', async (req, res) => {
 
   const d = snap.data();
   res.json({ ok: true, subscription: d.subscription || null, coupon: d.coupon || null, plan: d.plan || 'free' });
+});
+
+// === 7) 토스 웹훅 ===
+// 토스는 10초 내 200 응답 필수. 이벤트 처리는 응답 후 비동기로 진행.
+// 등록 URL: https://ai-backend-3xtk.onrender.com/toss/webhook
+// 구독 이벤트: PAYMENT_STATUS_CHANGED, BILLING_DELETED, CANCEL_STATUS_CHANGED
+router.post('/toss/webhook', async (req, res) => {
+  res.status(200).send('OK');
+
+  const { eventType, data } = req.body || {};
+  console.log(`📨 toss webhook: ${eventType}`);
+
+  try {
+    if (eventType === 'PAYMENT_STATUS_CHANGED') {
+      const { orderId, status, paymentKey } = data || {};
+      if (!orderId) return;
+      const orderRef = db.collection('subscriptionOrders').doc(orderId);
+      const snap = await orderRef.get();
+      if (!snap.exists) return;
+      await orderRef.update({
+        webhookStatus: status,
+        webhookPaymentKey: paymentKey || null,
+        webhookUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      // 외부에서 결제가 취소/만료된 경우 사용자 구독 정리
+      if (status === 'CANCELED' || status === 'ABORTED' || status === 'EXPIRED') {
+        const order = snap.data();
+        if (order.uid) {
+          await db.collection('users').doc(order.uid).update({
+            'subscription.status': 'refunded',
+            'plan': 'free'
+          });
+        }
+      }
+    } else if (eventType === 'BILLING_DELETED') {
+      const { billingKey } = data || {};
+      if (!billingKey) return;
+      const found = await db.collection('users')
+        .where('subscription.billingKey', '==', billingKey)
+        .limit(1).get();
+      if (!found.empty) {
+        await found.docs[0].ref.update({
+          'subscription.status': 'cancelled',
+          'subscription.billingKey': null,
+          'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
+          'subscription.billingKeyDeleted': true
+        });
+      }
+    } else if (eventType === 'CANCEL_STATUS_CHANGED') {
+      const { paymentKey, cancelStatus } = data || {};
+      if (!paymentKey) return;
+      await db.collection('webhookLogs').add({
+        eventType, paymentKey, cancelStatus,
+        receivedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+  } catch (e) {
+    console.error('webhook handler fail:', e);
+  }
 });
 
 module.exports = router;
