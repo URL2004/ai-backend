@@ -289,11 +289,8 @@ router.post('/subscription/charge', async (req, res) => {
   res.json({ ok: true, orderId });
 });
 
-// === 3) 매시간 cron 진입점 ===
-router.post('/subscription/process-due', async (req, res) => {
-  const { internalKey } = req.body;
-  if (internalKey !== process.env.CRON_SECRET) return res.status(403).json({ error: 'forbidden' });
-
+// === 3) 매시간 cron 진입점 핵심 로직 ===
+async function runProcessDue(internalKey) {
   const now = admin.firestore.Timestamp.now();
   const results = { processed: 0, charged: 0, failed: 0, expired: 0 };
 
@@ -342,6 +339,22 @@ router.post('/subscription/process-due', async (req, res) => {
   if (results.expired) await batch.commit();
 
   console.log(`🕐 cron 결과: ${JSON.stringify(results)}`);
+  return results;
+}
+
+// POST 진입점 (기존 호환)
+router.post('/subscription/process-due', async (req, res) => {
+  const { internalKey } = req.body;
+  if (internalKey !== process.env.CRON_SECRET) return res.status(403).json({ error: 'forbidden' });
+  const results = await runProcessDue(internalKey);
+  res.json({ ok: true, ...results });
+});
+
+// GET 진입점 (Render Cron Job 셸 인용 회피용 — 쿼리스트링 인증)
+router.get('/subscription/process-due', async (req, res) => {
+  const key = req.query.key;
+  if (key !== process.env.CRON_SECRET) return res.status(403).json({ error: 'forbidden' });
+  const results = await runProcessDue(key);
   res.json({ ok: true, ...results });
 });
 
