@@ -13,15 +13,27 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-6';
 
-// idToken 검증 + 크레딧 원자적 예약(차감). 실패 시 status 코드 포함 에러 throw.
-async function verifyAndReserveCredits(idToken, needed, opType) {
+// 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
+async function precheckCredits(idToken, needed) {
   if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 });
   let decoded;
   try { decoded = await admin.auth().verifyIdToken(idToken); }
   catch { throw Object.assign(new Error('AUTH_INVALID'), { status: 401 }); }
   const uid = decoded.uid;
+  const snap = await db.collection('users').doc(uid).get();
+  if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+  const d = snap.data();
+  const plan = d.plan || 'free';
+  if (plan === 'unlimited') return { uid, plan };
+  const credits = d.credits || 0;
+  if (credits < needed) throw Object.assign(new Error('INSUFFICIENT_CREDITS'), { status: 402 });
+  return { uid, plan };
+}
+
+// 결과 정상 후 호출. 원자적 차감 + creditHistory 기록.
+// 트랜잭션 안에서 다시 잔량을 검증해 동시 호출 레이스에서도 안전.
+async function commitCreditDeduct(uid, needed, opType) {
   const userRef = db.collection('users').doc(uid);
-  let reserved = 0;
   await db.runTransaction(async (t) => {
     const snap = await t.get(userRef);
     if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
@@ -36,54 +48,50 @@ async function verifyAndReserveCredits(idToken, needed, opType) {
       type: opType, used: needed, amount: 0, remaining: newCredits,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
-    reserved = needed;
   });
-  return { uid, reserved };
-}
-
-// LLM 실패 시 예약된 크레딧 환불.
-async function refundCredits(uid, amount) {
-  if (!amount) return;
-  try {
-    await db.collection('users').doc(uid).update({
-      credits: admin.firestore.FieldValue.increment(amount)
-    });
-  } catch (e) { console.error('refund fail', e); }
 }
 
 // 정기결제(Pro 탭) 쿠폰 검증 + 1회 차감. 결제는 텍스트 길이 1회당 쿠폰 1개.
 const SUB_CHAR_LIMITS = { '1000': 1000, '5000': 5000, '10000': 10000, 'unlimited': -1 };
 
-async function verifyAndReserveCoupon(idToken, textLength, opType) {
+// 쿠폰: 토큰 검증 + 구독 유효성 + 잔량/한도 확인. Firestore 읽기만.
+async function precheckCoupon(idToken, textLength) {
   if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 });
   let decoded;
   try { decoded = await admin.auth().verifyIdToken(idToken); }
   catch { throw Object.assign(new Error('AUTH_INVALID'), { status: 401 }); }
   const uid = decoded.uid;
-  const userRef = db.collection('users').doc(uid);
+  const snap = await db.collection('users').doc(uid).get();
+  if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+  const d = snap.data();
+  const sub = d.subscription;
+  if (!sub) throw Object.assign(new Error('NO_SUBSCRIPTION'), { status: 403 });
+  const nextMs = sub.nextBillingAt?.toMillis ? sub.nextBillingAt.toMillis() : 0;
+  const valid = sub.status === 'active' || (sub.status === 'cancelled' && nextMs > Date.now());
+  if (!valid) throw Object.assign(new Error('SUBSCRIPTION_INACTIVE'), { status: 403 });
+  const tier = sub.tier;
+  const charLimit = SUB_CHAR_LIMITS[tier];
+  if (charLimit === undefined) throw Object.assign(new Error('INVALID_TIER'), { status: 500 });
+  if (charLimit !== -1 && textLength > charLimit) {
+    throw Object.assign(new Error('COUPON_LIMIT_EXCEEDED'), { status: 400, charLimit });
+  }
+  if (tier !== 'unlimited') {
+    const remaining = d.coupon?.remaining ?? 0;
+    if (remaining <= 0) throw Object.assign(new Error('NO_COUPON'), { status: 402 });
+  }
+  return { uid, billingMode: 'coupon', tier };
+}
 
-  let billingTier = null;
+// 쿠폰: 결과 정상 후 호출. 원자적 차감 + couponHistory 기록.
+async function commitCouponUsage(uid, tier, opType, textLength) {
+  const userRef = db.collection('users').doc(uid);
   await db.runTransaction(async (t) => {
     const snap = await t.get(userRef);
     if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
     const d = snap.data();
     const sub = d.subscription;
     if (!sub) throw Object.assign(new Error('NO_SUBSCRIPTION'), { status: 403 });
-
-    const nextMs = sub.nextBillingAt?.toMillis ? sub.nextBillingAt.toMillis() : 0;
-    const valid = sub.status === 'active' || (sub.status === 'cancelled' && nextMs > Date.now());
-    if (!valid) throw Object.assign(new Error('SUBSCRIPTION_INACTIVE'), { status: 403 });
-
-    const tier = sub.tier;
-    billingTier = tier;
-    const charLimit = SUB_CHAR_LIMITS[tier];
-    if (charLimit === undefined) throw Object.assign(new Error('INVALID_TIER'), { status: 500 });
-    if (charLimit !== -1 && textLength > charLimit) {
-      throw Object.assign(new Error('COUPON_LIMIT_EXCEEDED'), { status: 400, charLimit });
-    }
-
     if (tier === 'unlimited') {
-      // unlimited는 잔량은 차감하지 않지만 used 카운터는 증가시켜 환불 자격 판정에 활용
       t.update(userRef, { 'coupon.used': admin.firestore.FieldValue.increment(1) });
       const hist = userRef.collection('couponHistory').doc();
       t.set(hist, {
@@ -93,7 +101,6 @@ async function verifyAndReserveCoupon(idToken, textLength, opType) {
       });
       return;
     }
-
     const remaining = d.coupon?.remaining ?? 0;
     if (remaining <= 0) throw Object.assign(new Error('NO_COUPON'), { status: 402 });
     const newRemaining = remaining - 1;
@@ -108,18 +115,6 @@ async function verifyAndReserveCoupon(idToken, textLength, opType) {
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
   });
-
-  return { uid, billingMode: 'coupon', tier: billingTier };
-}
-
-// LLM 실패 시 쿠폰 1개 복구. unlimited는 remaining은 안 건드리고 used만 복구.
-async function refundCoupon(reservation) {
-  if (!reservation || reservation.billingMode !== 'coupon') return;
-  try {
-    const patch = { 'coupon.used': admin.firestore.FieldValue.increment(-1) };
-    if (reservation.tier !== 'unlimited') patch['coupon.remaining'] = admin.firestore.FieldValue.increment(1);
-    await db.collection('users').doc(reservation.uid).update(patch);
-  } catch (e) { console.error('coupon refund fail', e); }
 }
 
 function authErrorMessage(code) {
@@ -756,13 +751,12 @@ router.post('/analyze', async (req, res) => {
   const needed = Math.ceil(text.length / 100);
   const opType = mode === 'detect' ? 'detect' : 'humanize';
 
-  let reserved;
+  // 1) precheck — 토큰/잔량/구독 검증 (Firestore 읽기만, 차감 없음)
+  let pre;
   try {
-    if (billingMode === 'coupon') {
-      reserved = await verifyAndReserveCoupon(idToken, text.length, opType);
-    } else {
-      reserved = await verifyAndReserveCredits(idToken, needed, opType);
-    }
+    pre = billingMode === 'coupon'
+      ? await precheckCoupon(idToken, text.length)
+      : await precheckCredits(idToken, needed);
   } catch (e) {
     return res.status(e.status || 500).json({
       error: authErrorMessage(e.message),
@@ -770,8 +764,11 @@ router.post('/analyze', async (req, res) => {
     });
   }
 
+  // 2) Claude 호출 + 결과 검증 (실패 시 차감 없음)
+  let result;
+  let usage;
+  let refineUsage = null;
   try {
-    // ★ 감지: tool_use로 구조화 응답 수신 (JSON.parse 실패 원천 차단)
     if (mode === 'detect') {
       const detectUserContent = prevContext
         ? `[앞 청크의 마지막 일부 — 문맥 참고용, 이 부분은 점수에 포함하지 말 것]\n${prevContext}\n\n[분석할 글]\n${text}`
@@ -782,82 +779,93 @@ router.post('/analyze', async (req, res) => {
         getDetectSystem(lang),
         { model: MODEL, maxTokens: 10000, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
       );
-      const result = extractToolResult(data, DETECT_TOOL.name);
-      return res.json({ ok: true, result, usage: data.usage });
-    }
+      result = extractToolResult(data, DETECT_TOOL.name);
+      if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
+        throw new Error('detect_incomplete');
+      }
+      usage = data.usage;
+    } else {
+      // 웹 검색 (유저가 활성화한 경우에만 실행)
+      let examples = null;
+      if (req.body.webSearch) {
+        try {
+          const searchPrompt = lang === 'en'
+            ? `Identify the topic of the following text and briefly provide 2-3 specific real-world examples or statistics related to it. Text: ${text.substring(0, 500)}`
+            : `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}`;
+          const searchData = await callClaude(
+            [{ role: 'user', content: searchPrompt }],
+            [{ type: 'web_search_20250305', name: 'web_search' }]
+          );
+          const textContent = searchData.content.filter(c => c.type === 'text').map(c => c.text).join('');
+          if (textContent.length > 50) examples = textContent.substring(0, 800);
+        } catch(e) {}
+      }
 
-    // 웹 검색 (유저가 활성화한 경우에만 실행)
-    let examples = null;
-    if (req.body.webSearch) {
-      try {
-        const searchPrompt = lang === 'en'
-          ? `Identify the topic of the following text and briefly provide 2-3 specific real-world examples or statistics related to it. Text: ${text.substring(0, 500)}`
-          : `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}`;
-        const searchData = await callClaude(
-          [{ role: 'user', content: searchPrompt }],
-          [{ type: 'web_search_20250305', name: 'web_search' }]
-        );
-        const textContent = searchData.content.filter(c => c.type === 'text').map(c => c.text).join('');
-        if (textContent.length > 50) examples = textContent.substring(0, 800);
-      } catch(e) {}
-    }
+      // ★ 휴머나이저: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
+      const selectedMode = req.body.humanizeMode || 'assignment';
+      const humanizeSystem = getHumanizeSystem(selectedMode, lang);
+      const humanizeTool = buildHumanizeTool(selectedMode);
+      const prevContextBlock = prevContext
+        ? `[앞 청크의 마지막 일부 — 문체 연속성 참고용, 다시 변환하지 말 것]\n${prevContext}\n\n`
+        : '';
+      const userContent = examples
+        ? `${prevContextBlock}[재작성할 텍스트]\n${text}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
+        : `${prevContextBlock}[재작성할 텍스트]\n${text}`;
+      const inputParaCount = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
+      const inputCharLen = text.replace(/\s+/g, '').length;
 
-    // ★ 휴머나이저: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
-    const selectedMode = req.body.humanizeMode || 'assignment';
-    const humanizeSystem = getHumanizeSystem(selectedMode, lang);
-    const humanizeTool = buildHumanizeTool(selectedMode);
-    const prevContextBlock = prevContext
-      ? `[앞 청크의 마지막 일부 — 문체 연속성 참고용, 다시 변환하지 말 것]\n${prevContext}\n\n`
-      : '';
-    const userContent = examples
-      ? `${prevContextBlock}[재작성할 텍스트]\n${text}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
-      : `${prevContextBlock}[재작성할 텍스트]\n${text}`;
-    const inputParaCount = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
-    const inputCharLen = text.replace(/\s+/g, '').length;
-
-    const data = await callClaude(
-      [{ role: 'user', content: userContent }],
-      [humanizeTool], 0.9,
-      humanizeSystem,
-      { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
-    );
-    let result = extractToolResult(data, humanizeTool.name);
-    verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
-
-    // ★ 2-pass 폴백: critical 위반 1건 또는 minor 2건+일 때만 재호출 (비용 절약)
-    let refineUsage = null;
-    const refineDecision = shouldRefine(result, selectedMode);
-    if (refineDecision.refine) {
-      const failed = collectFailedFields(result, selectedMode);
-      console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
-      const refineUser = `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${text}\n\n[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형을 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
-      const refineData = await callClaude(
-        [{ role: 'user', content: refineUser }],
+      const data = await callClaude(
+        [{ role: 'user', content: userContent }],
         [humanizeTool], 0.9,
         humanizeSystem,
         { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
       );
-      result = extractToolResult(refineData, humanizeTool.name);
+      result = extractToolResult(data, humanizeTool.name);
       verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
-      refineUsage = refineData.usage;
-      if (result.selfCheckPass === false) {
-        console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
+
+      // ★ 2-pass 폴백: critical 위반 1건 또는 minor 2건+일 때만 재호출 (비용 절약)
+      const refineDecision = shouldRefine(result, selectedMode);
+      if (refineDecision.refine) {
+        const failed = collectFailedFields(result, selectedMode);
+        console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
+        const refineUser = `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${text}\n\n[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형을 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
+        const refineData = await callClaude(
+          [{ role: 'user', content: refineUser }],
+          [humanizeTool], 0.9,
+          humanizeSystem,
+          { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
+        );
+        result = extractToolResult(refineData, humanizeTool.name);
+        verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
+        refineUsage = refineData.usage;
+        if (result.selfCheckPass === false) {
+          console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
+        }
       }
+
+      if (result.outputText) result.outputText = cleanText(result.outputText);
+      if (!result.outputText) throw new Error('humanize_incomplete');
+      usage = data.usage;
     }
-
-    if (result.outputText) result.outputText = cleanText(result.outputText);
-
-    res.json({ ok: true, result, usage: data.usage, refineUsage });
-
   } catch (err) {
-    if (reserved?.billingMode === 'coupon') {
-      await refundCoupon(reserved);
-    } else if (reserved) {
-      await refundCredits(reserved.uid, reserved.reserved);
-    }
     console.error('/analyze LLM error:', err && err.message);
-    res.status(500).json({ error: '처리 중 오류가 발생했습니다.' });
+    return res.status(500).json({ error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.' });
   }
+
+  // 3) 결과 정상 → 차감 (실패 시 결과 응답 안 함)
+  try {
+    if (billingMode === 'coupon') {
+      await commitCouponUsage(pre.uid, pre.tier, opType, text.length);
+    } else if (pre.plan !== 'unlimited') {
+      await commitCreditDeduct(pre.uid, needed, opType);
+    }
+  } catch (e) {
+    console.error('/analyze deduct fail:', e?.code, e?.message);
+    return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
+  }
+
+  // 4) 응답
+  res.json({ ok: true, result, usage, refineUsage });
 });
 
 router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
@@ -875,7 +883,6 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
   const opType = mode === 'detect' ? 'detect' : 'humanize';
 
-  let reserved;
   let pdfText;
   try {
     const pdfData = await pdfParse(req.file.buffer);
@@ -889,12 +896,12 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
   const needed = Math.ceil(req.file.size / 10240);
 
+  // 1) precheck — 토큰/잔량/구독 검증 (Firestore 읽기만, 차감 없음)
+  let pre;
   try {
-    if (billingMode === 'coupon') {
-      reserved = await verifyAndReserveCoupon(idToken, pdfText.length, opType);
-    } else {
-      reserved = await verifyAndReserveCredits(idToken, needed, opType);
-    }
+    pre = billingMode === 'coupon'
+      ? await precheckCoupon(idToken, pdfText.length)
+      : await precheckCredits(idToken, needed);
   } catch (e) {
     return res.status(e.status || 500).json({
       error: authErrorMessage(e.message),
@@ -902,15 +909,17 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     });
   }
 
+  // 2) Claude 호출 + 결과 검증 (실패 시 차감 없음)
+  let result;
+  let usage;
   try {
     const text = pdfText;
-
     const humanizeModePdf = req.body.humanizeMode || 'assignment';
     const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(humanizeModePdf, lang);
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
     const activeTool = mode === 'detect' ? DETECT_TOOL : buildHumanizeTool(humanizeModePdf);
     const pdfOptions = mode === 'detect'
-      ? { model: MODEL, maxTokens: 2048, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
+      ? { model: MODEL, maxTokens: 10000, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
       : { maxTokens: 16384, toolChoice: { type: 'tool', name: activeTool.name } };
     const data = await callClaude(
       [{ role: 'user', content: userContent }],
@@ -918,24 +927,40 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       systemPrompt,
       pdfOptions
     );
-    const result = extractToolResult(data, activeTool.name);
-    if (result.outputText) result.outputText = cleanText(result.outputText);
-
-    res.json({
-      ok: true,
-      result,
-      usage: data.usage,
-      extractedText: text.substring(0, 500)
-    });
-  } catch (err) {
-    if (reserved?.billingMode === 'coupon') {
-      await refundCoupon(reserved);
-    } else if (reserved) {
-      await refundCredits(reserved.uid, reserved.reserved);
+    result = extractToolResult(data, activeTool.name);
+    if (mode === 'detect') {
+      if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
+        throw new Error('detect_incomplete');
+      }
+    } else {
+      if (result.outputText) result.outputText = cleanText(result.outputText);
+      if (!result.outputText) throw new Error('humanize_incomplete');
     }
+    usage = data.usage;
+  } catch (err) {
     console.error('/analyze-pdf LLM error:', err && err.message);
-    res.status(500).json({ error: '처리 중 오류가 발생했습니다.' });
+    return res.status(500).json({ error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.' });
   }
+
+  // 3) 결과 정상 → 차감
+  try {
+    if (billingMode === 'coupon') {
+      await commitCouponUsage(pre.uid, pre.tier, opType, pdfText.length);
+    } else if (pre.plan !== 'unlimited') {
+      await commitCreditDeduct(pre.uid, needed, opType);
+    }
+  } catch (e) {
+    console.error('/analyze-pdf deduct fail:', e?.code, e?.message);
+    return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
+  }
+
+  // 4) 응답
+  res.json({
+    ok: true,
+    result,
+    usage,
+    extractedText: pdfText.substring(0, 500)
+  });
 });
 
 router.verifyCheckFields = verifyCheckFields;
