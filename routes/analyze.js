@@ -780,7 +780,7 @@ router.post('/analyze', async (req, res) => {
         [{ role: 'user', content: detectUserContent }],
         [DETECT_TOOL], undefined,
         getDetectSystem(lang),
-        { model: MODEL, maxTokens: 2048, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
+        { model: MODEL, maxTokens: 10000, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
       );
       const result = extractToolResult(data, DETECT_TOOL.name);
       return res.json({ ok: true, result, usage: data.usage });
