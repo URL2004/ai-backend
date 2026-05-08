@@ -11,7 +11,7 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = 'gemini-3-pro-preview';
+const MODEL = 'gemini-3.1-pro-preview';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 // thinking 비용 절감용 기본값. 어려운 케이스에서 품질 저하 보이면 'medium'/'high'로 상향.
 const THINKING_LEVEL = 'low';
@@ -749,7 +749,19 @@ function cleanText(text) {
 
 // ─── Gemini generateContent API 호출 ─────────────────────────────
 // systemText는 systemInstruction으로 전달. 동일 prefix가 4096+ 토큰이면 implicit context caching 자동 적용.
+// transient 실패(429/5xx + 네트워크) 자동 재시도 — 보수적 백오프 1s/2s+jitter, 최대 3 시도.
 // 호출부 호환을 위해 함수명은 callGemini, 반환 객체에 data.usage 별칭(OpenAI 호환 키)도 부착.
+const RETRYABLE_HTTP_STATUS = new Set([429, 500, 502, 503, 504]);
+const RETRY_BASE_DELAYS_MS = [1000, 2000];
+const MAX_GEMINI_ATTEMPTS = RETRY_BASE_DELAYS_MS.length + 1;
+
+function isNetworkError(err) {
+  if (!err) return false;
+  if (err.name === 'TypeError') return true;
+  const msg = err.message || '';
+  return /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR/i.test(msg);
+}
+
 async function callGemini({ userText, systemText, responseSchema, temperature, maxOutputTokens, responseMimeType }) {
   if (!GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY is not configured');
@@ -777,44 +789,60 @@ async function callGemini({ userText, systemText, responseSchema, temperature, m
   }
 
   const url = `${GEMINI_API_BASE}/models/${MODEL}:generateContent`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': GEMINI_API_KEY
-    },
-    body: JSON.stringify(body)
-  });
-  const data = await response.json();
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-goog-api-key': GEMINI_API_KEY
+  };
+  const requestBody = JSON.stringify(body);
 
-  if (!response.ok) {
-    const msg = data?.error?.message || response.statusText;
-    throw new Error(`Gemini API ${response.status}: ${msg}`);
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_GEMINI_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(url, { method: 'POST', headers, body: requestBody });
+      // 502/503에서 HTML 에러 페이지 올 수 있으므로 JSON 파싱 실패는 흡수
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const msg = data?.error?.message || response.statusText;
+        const err = new Error(`Gemini API ${response.status}: ${msg}`);
+        err.status = response.status;
+        err.retryable = RETRYABLE_HTTP_STATUS.has(response.status);
+        throw err;
+      }
+
+      if (data.usageMetadata) {
+        const u = data.usageMetadata;
+        const cached = u.cachedContentTokenCount || 0;
+        const thoughts = u.thoughtsTokenCount || 0;
+        console.log("-----------------------------------------");
+        console.log(`📊 비용 리포트: 입력 ${u.promptTokenCount || 0} (캐시 ${cached}) / 출력 ${u.candidatesTokenCount || 0} (thinking ${thoughts}) / 총 ${u.totalTokenCount || 0}`);
+        console.log("-----------------------------------------");
+        // 호출부/프런트 호환: OpenAI usage 키로 별칭
+        data.usage = {
+          prompt_tokens: u.promptTokenCount || 0,
+          completion_tokens: u.candidatesTokenCount || 0,
+          total_tokens: u.totalTokenCount || 0,
+          prompt_tokens_details: { cached_tokens: cached },
+          completion_tokens_details: { reasoning_tokens: thoughts }
+        };
+      }
+
+      const finish = data?.candidates?.[0]?.finishReason;
+      if (finish === 'MAX_TOKENS') {
+        console.log('⚠️ 응답이 maxOutputTokens 제한으로 잘림');
+      }
+
+      return data;
+    } catch (err) {
+      lastErr = err;
+      const shouldRetry = (err.retryable === true || isNetworkError(err)) && attempt < MAX_GEMINI_ATTEMPTS;
+      if (!shouldRetry) throw err;
+      const delay = RETRY_BASE_DELAYS_MS[attempt - 1] + Math.floor(Math.random() * 500);
+      console.log(`⚠️ Gemini 호출 실패 (attempt ${attempt}/${MAX_GEMINI_ATTEMPTS}): ${err.message}. ${delay}ms 후 재시도`);
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
-
-  if (data.usageMetadata) {
-    const u = data.usageMetadata;
-    const cached = u.cachedContentTokenCount || 0;
-    const thoughts = u.thoughtsTokenCount || 0;
-    console.log("-----------------------------------------");
-    console.log(`📊 비용 리포트: 입력 ${u.promptTokenCount || 0} (캐시 ${cached}) / 출력 ${u.candidatesTokenCount || 0} (thinking ${thoughts}) / 총 ${u.totalTokenCount || 0}`);
-    console.log("-----------------------------------------");
-    // 호출부/프런트 호환: OpenAI usage 키로 별칭
-    data.usage = {
-      prompt_tokens: u.promptTokenCount || 0,
-      completion_tokens: u.candidatesTokenCount || 0,
-      total_tokens: u.totalTokenCount || 0,
-      prompt_tokens_details: { cached_tokens: cached },
-      completion_tokens_details: { reasoning_tokens: thoughts }
-    };
-  }
-
-  const finish = data?.candidates?.[0]?.finishReason;
-  if (finish === 'MAX_TOKENS') {
-    console.log('⚠️ 응답이 maxOutputTokens 제한으로 잘림');
-  }
-
-  return data;
+  throw lastErr;
 }
 
 // 웹 검색 grounding은 OpenAI에서는 별도 도구 흐름 — 1차 마이그레이션에선 비활성.
@@ -935,7 +963,12 @@ router.post('/analyze', async (req, res) => {
     }
   } catch (err) {
     console.error('/analyze LLM error:', err && err.message);
-    return res.status(500).json({ error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.' });
+    const overloaded = err.status === 503 || err.status === 429
+      || isNetworkError(err);
+    const userMsg = overloaded
+      ? '모델 서버가 일시적으로 혼잡합니다. 잠시 뒤 다시 시도해주세요. 크레딧은 차감되지 않았습니다.'
+      : '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.';
+    return res.status(overloaded ? 503 : 500).json({ error: userMsg });
   }
 
   // 3) 결과 정상 → 차감 (실패 시 결과 응답 안 함)
@@ -1025,7 +1058,12 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     usage = data.usage;
   } catch (err) {
     console.error('/analyze-pdf LLM error:', err && err.message);
-    return res.status(500).json({ error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.' });
+    const overloaded = err.status === 503 || err.status === 429
+      || isNetworkError(err);
+    const userMsg = overloaded
+      ? '모델 서버가 일시적으로 혼잡합니다. 잠시 뒤 다시 시도해주세요. 크레딧은 차감되지 않았습니다.'
+      : '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.';
+    return res.status(overloaded ? 503 : 500).json({ error: userMsg });
   }
 
   // 3) 결과 정상 → 차감
