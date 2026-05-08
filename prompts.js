@@ -490,7 +490,7 @@ function getDetectSystem(lang = 'ko') {
 }
 
 // ★ 휴머나이저 시스템 프롬프트 반환 (고정 부분만 → 캐싱됨)
-// ★ 출력 구조는 tool_use 스키마가 강제하므로 시스템 프롬프트에서 JSON 지시를 제거함.
+// ★ 출력 구조는 Gemini responseSchema가 강제하므로 시스템 프롬프트에서 JSON 지시를 제거함.
 function getHumanizeSystem(mode, lang = 'ko') {
   const modePrompts = HUMAN_PROMPTS[mode] || HUMAN_PROMPTS['assignment'];
   return modePrompts[lang] || modePrompts['ko'];

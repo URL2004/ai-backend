@@ -1,5 +1,5 @@
-// [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리 + Claude API 호출 유틸
-// ★ 캐싱 최적화: 고정 프롬프트를 system에 넣어 cache_control 적용
+// [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리 + Gemini API 호출 유틸
+// ★ Context Caching 최적화: 고정 시스템 프롬프트는 cachedContents로 관리
 
 const express = require('express');
 const multer = require('multer');
@@ -10,8 +10,9 @@ const { admin, db } = require('../config');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-const API_KEY = process.env.ANTHROPIC_API_KEY;
-const MODEL = 'claude-sonnet-4-6';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const MODEL = 'gemini-3.1-pro';
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 // 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
 async function precheckCredits(idToken, needed) {
@@ -131,8 +132,9 @@ function authErrorMessage(code) {
   })[code] || '인증/결제 확인에 실패했습니다.';
 }
 
-// ★ 구조화 출력용 tool 정의 (JSON.parse 대신 tool_use로 안전하게 객체 수신)
+// ★ 구조화 출력용 schema 정의 (Gemini responseSchema 변환용 베이스)
 // ★ mode별 스키마 분기: assignment만 의문문/접속사/P3/문단비율 필드 강제
+// 함수명에 "Tool"이 남아 있는 건 기존 구조 유지용 — 실제로는 Gemini JSON 모드 schema로 변환됨
 function buildHumanizeTool(mode) {
   const baseProperties = {
     outputText: { type: 'string', description: '변환된 글 전체' },
@@ -250,10 +252,67 @@ const DETECT_TOOL = {
   }
 };
 
-function extractToolResult(data, toolName) {
-  const toolUse = data.content && data.content.find(c => c.type === 'tool_use' && c.name === toolName);
-  if (!toolUse) throw new Error('모델이 구조화 응답을 반환하지 않았습니다.');
-  return toolUse.input;
+// Gemini JSON 모드 응답에서 결과 객체 추출
+function extractGeminiResult(data) {
+  if (data?.promptFeedback?.blockReason) {
+    throw new Error(`안전 필터 차단: ${data.promptFeedback.blockReason}`);
+  }
+  const candidate = data?.candidates?.[0];
+  if (!candidate) throw new Error('모델이 응답을 반환하지 않았습니다.');
+  if (candidate.finishReason === 'SAFETY') {
+    throw new Error('안전 필터에 의해 응답이 차단되었습니다.');
+  }
+  const parts = candidate.content?.parts || [];
+  const textPart = parts.find(p => typeof p.text === 'string');
+  if (!textPart) throw new Error('모델이 구조화 응답을 반환하지 않았습니다.');
+  let parsed;
+  try {
+    parsed = JSON.parse(textPart.text);
+  } catch (e) {
+    throw new Error('모델 응답 JSON 파싱 실패');
+  }
+  // topNounCounts가 string으로 왔으면 객체로 정규화
+  if (parsed && typeof parsed.topNounCounts === 'string') {
+    try { parsed.topNounCounts = JSON.parse(parsed.topNounCounts); }
+    catch { parsed.topNounCounts = {}; }
+  }
+  if (parsed && parsed.topNounCounts && typeof parsed.topNounCounts !== 'object') {
+    parsed.topNounCounts = {};
+  }
+  return parsed;
+}
+
+// JSON Schema → Gemini responseSchema 변환 어댑터
+// - Gemini는 additionalProperties 미지원 → topNounCounts는 string으로 평탄화
+// - 그 외는 OpenAPI subset 호환이라 거의 그대로 통과
+function toGeminiSchema(jsonSchema) {
+  const clone = JSON.parse(JSON.stringify(jsonSchema));
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    // additionalProperties로 동적 키를 가진 object → string 타입(JSON 문자열)으로 평탄화
+    if (node.type === 'object' && node.additionalProperties) {
+      const oldDesc = node.description || '';
+      delete node.properties;
+      delete node.required;
+      delete node.additionalProperties;
+      node.type = 'string';
+      node.description = oldDesc + ' (JSON object 문자열로 작성. 예: {"키":값,"키":값})';
+      return;
+    }
+    if (node.properties) {
+      for (const k of Object.keys(node.properties)) walk(node.properties[k]);
+    }
+    if (node.items) walk(node.items);
+  }
+  walk(clone);
+  return clone;
+}
+
+function buildDetectResponseSchema() {
+  return toGeminiSchema(DETECT_TOOL.input_schema);
+}
+function buildHumanizeResponseSchema(mode) {
+  return toGeminiSchema(buildHumanizeTool(mode).input_schema);
 }
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
@@ -680,52 +739,139 @@ function cleanText(text) {
     .trim();
 }
 
-async function callClaude(messages, tools, temperature, system, options = {}) {
+// ─── Gemini Context Cache 관리 ─────────────────────────────
+// kind: 'detect' | 'humanize'
+// mode: 휴머나이즈 모드(humanize일 때만 의미). detect일 때는 null.
+// lang: 'ko' | 'en'
+const _geminiCacheStore = new Map(); // key: `${kind}:${mode||''}:${lang}` → { name, expireTime }
+
+function _cacheKey(kind, mode, lang) {
+  return `${kind}:${mode || ''}:${lang}`;
+}
+
+async function createCachedContent(kind, mode, lang, systemText) {
+  if (!GEMINI_API_KEY) return null;
+  const url = `${GEMINI_API_BASE}/cachedContents?key=${GEMINI_API_KEY}`;
   const body = {
-    model: options.model || MODEL,
-    max_tokens: options.maxTokens || 8192,
-    messages: messages
+    model: `models/${MODEL}`,
+    systemInstruction: { parts: [{ text: systemText }] },
+    contents: [{ role: 'user', parts: [{ text: '안녕하세요.' }] }],
+    ttl: '3600s'
   };
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok || !data.name) {
+      console.warn(`⚠️ Gemini cache 생성 실패 (${kind}/${mode || '-'}/${lang}):`, data.error?.message || res.statusText);
+      return null;
+    }
+    console.log(`📦 Gemini cache 생성: ${data.name} (${kind}/${mode || '-'}/${lang})`);
+    return { name: data.name, expireTime: data.expireTime };
+  } catch (e) {
+    console.warn(`⚠️ Gemini cache 네트워크 오류 (${kind}/${mode || '-'}/${lang}):`, e.message);
+    return null;
+  }
+}
 
+async function getCachedContentName(kind, mode, lang, systemText) {
+  if (!GEMINI_API_KEY) return null;
+  const key = _cacheKey(kind, mode, lang);
+  const existing = _geminiCacheStore.get(key);
+  if (existing) {
+    const exp = existing.expireTime ? new Date(existing.expireTime).getTime() : 0;
+    // 만료 60초 전이면 갱신
+    if (exp - Date.now() > 60_000) return existing.name;
+  }
+  const created = await createCachedContent(kind, mode, lang, systemText);
+  if (created) _geminiCacheStore.set(key, created);
+  return created?.name || null;
+}
+
+// ─── Gemini API 호출 ─────────────────────────────
+async function callGemini({ userText, cachedContentName, systemText, responseSchema, temperature, maxOutputTokens, tools, responseMimeType }) {
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY is not configured');
+  }
+  const mimeType = responseMimeType !== undefined ? responseMimeType : 'application/json';
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: userText }] }],
+    generationConfig: {}
+  };
+  if (mimeType) body.generationConfig.responseMimeType = mimeType;
+  if (responseSchema) body.generationConfig.responseSchema = responseSchema;
+  if (typeof temperature === 'number') body.generationConfig.temperature = temperature;
+  if (typeof maxOutputTokens === 'number') body.generationConfig.maxOutputTokens = maxOutputTokens;
   if (tools) body.tools = tools;
-  if (options.toolChoice) body.tool_choice = options.toolChoice;
-  if (temperature !== undefined) body.temperature = temperature;
 
-  // ★ 시스템 프롬프트에 cache_control 적용 (고정 프롬프트가 캐싱됨)
-  if (system) {
-    body.system = [
-      {
-        type: "text",
-        text: system,
-        cache_control: { type: "ephemeral" }
-      }
-    ];
+  // 캐시 사용 시 systemInstruction은 캐시에 들어 있으므로 본문에는 넣지 않음
+  if (cachedContentName) {
+    body.cachedContent = cachedContentName;
+  } else if (systemText) {
+    body.systemInstruction = { parts: [{ text: systemText }] };
   }
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const url = `${GEMINI_API_BASE}/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'prompt-caching-2024-07-31'
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-
   const data = await response.json();
 
-  if (data.usage) {
+  if (!response.ok) {
+    const msg = data?.error?.message || response.statusText;
+    throw new Error(`Gemini API ${response.status}: ${msg}`);
+  }
+
+  if (data.usageMetadata) {
+    const u = data.usageMetadata;
     console.log("-----------------------------------------");
-    console.log(`📊 비용 리포트: 캐시읽기(90%할인) ${data.usage.cache_read_input_tokens || 0} / 캐시생성(25%추가) ${data.usage.cache_creation_input_tokens || 0} / 일반입력 ${data.usage.input_tokens || 0}`);
+    console.log(`📊 비용 리포트: 입력 ${u.promptTokenCount || 0} (캐시 ${u.cachedContentTokenCount || 0}) / 출력 ${u.candidatesTokenCount || 0} / 총 ${u.totalTokenCount || 0}`);
     console.log("-----------------------------------------");
   }
 
-  if (data.stop_reason === 'max_tokens') {
+  const finish = data?.candidates?.[0]?.finishReason;
+  if (finish === 'MAX_TOKENS') {
     console.log('⚠️ 응답이 max_tokens 제한으로 잘림');
   }
 
   return data;
+}
+
+// 휴머나이즈 시 웹 검색이 켜진 경우, Gemini Google Search grounding으로
+// 입력 글의 주제를 뒷받침할 실제 사례·통계·뉴스를 자연어 텍스트로 받아 examples로 사용한다.
+// 실패 시 null을 반환하여 호출 측에서 기존 동작(examples=null)으로 폴백.
+async function fetchWebSearchExamples(text, lang) {
+  const promptKo = `다음 글의 핵심 주제를 파악하고, 그 주제를 뒷받침하는 최근(가능하면 2024~2026년) 실제 사례·통계·뉴스 3~5개를 한국어로 짧게 정리해줘. 각 항목은 1~2문장. 출처가 불확실하면 포함하지 말 것.\n\n[글]\n${String(text).slice(0, 2000)}`;
+  const promptEn = `Identify the core topic of the following text, then list 3-5 recent (preferably 2024-2026) real-world examples, statistics, or news items that support the topic in English. Each item 1-2 sentences. Skip anything with uncertain sourcing.\n\n[Text]\n${String(text).slice(0, 2000)}`;
+  try {
+    const data = await callGemini({
+      userText: lang === 'ko' ? promptKo : promptEn,
+      tools: [{ google_search: {} }],
+      responseMimeType: null,
+      temperature: 0.3,
+      maxOutputTokens: 1500
+    });
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const out = parts.map(p => p?.text).filter(Boolean).join('\n').trim();
+    if (!out) return null;
+    const meta = data?.candidates?.[0]?.groundingMetadata;
+    if (meta?.webSearchQueries?.length) {
+      console.log('🔎 web search queries:', meta.webSearchQueries);
+    }
+    if (meta?.groundingChunks?.length) {
+      const sources = meta.groundingChunks.map(c => c?.web?.uri).filter(Boolean);
+      if (sources.length) console.log('🔎 sources:', sources);
+    }
+    return out;
+  } catch (e) {
+    console.warn('웹 검색 호출 실패, examples=null로 폴백:', e?.message);
+    return null;
+  }
 }
 
 // --- 라우트 ---
@@ -764,7 +910,7 @@ router.post('/analyze', async (req, res) => {
     });
   }
 
-  // 2) Claude 호출 + 결과 검증 (실패 시 차감 없음)
+  // 2) Gemini 호출 + 결과 검증 (실패 시 차감 없음)
   let result;
   let usage;
   let refineUsage = null;
@@ -773,38 +919,30 @@ router.post('/analyze', async (req, res) => {
       const detectUserContent = prevContext
         ? `[앞 청크의 마지막 일부 — 문맥 참고용, 이 부분은 점수에 포함하지 말 것]\n${prevContext}\n\n[분석할 글]\n${text}`
         : `[분석할 글]\n${text}`;
-      const data = await callClaude(
-        [{ role: 'user', content: detectUserContent }],
-        [DETECT_TOOL], undefined,
-        getDetectSystem(lang),
-        { model: MODEL, maxTokens: 10000, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
-      );
-      result = extractToolResult(data, DETECT_TOOL.name);
+      const detectSystem = getDetectSystem(lang);
+      const cacheName = await getCachedContentName('detect', null, lang, detectSystem);
+      const data = await callGemini({
+        userText: detectUserContent,
+        cachedContentName: cacheName,
+        systemText: cacheName ? null : detectSystem,
+        responseSchema: buildDetectResponseSchema(),
+        maxOutputTokens: 10000
+      });
+      result = extractGeminiResult(data);
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
         throw new Error('detect_incomplete');
       }
-      usage = data.usage;
+      usage = data.usageMetadata;
     } else {
-      // 웹 검색 (유저가 활성화한 경우에만 실행)
-      let examples = null;
-      if (req.body.webSearch) {
-        try {
-          const searchPrompt = lang === 'en'
-            ? `Identify the topic of the following text and briefly provide 2-3 specific real-world examples or statistics related to it. Text: ${text.substring(0, 500)}`
-            : `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}`;
-          const searchData = await callClaude(
-            [{ role: 'user', content: searchPrompt }],
-            [{ type: 'web_search_20250305', name: 'web_search' }]
-          );
-          const textContent = searchData.content.filter(c => c.type === 'text').map(c => c.text).join('');
-          if (textContent.length > 50) examples = textContent.substring(0, 800);
-        } catch(e) {}
-      }
+      // 웹 검색 토글이 켜진 경우에만 Gemini Google Search grounding으로 examples 수집.
+      // 실패 시 null로 폴백되어 기존 휴머나이즈 흐름과 동일하게 진행됨.
+      const useWebSearch = !!req.body.webSearch;
+      const examples = useWebSearch ? await fetchWebSearchExamples(text, lang) : null;
 
-      // ★ 휴머나이저: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
+      // ★ 휴머나이저: 고정 프롬프트는 Context Cache, 유저 텍스트만 user 메시지
       const selectedMode = req.body.humanizeMode || 'assignment';
       const humanizeSystem = getHumanizeSystem(selectedMode, lang);
-      const humanizeTool = buildHumanizeTool(selectedMode);
+      const humanizeSchema = buildHumanizeResponseSchema(selectedMode);
       const prevContextBlock = prevContext
         ? `[앞 청크의 마지막 일부 — 문체 연속성 참고용, 다시 변환하지 말 것]\n${prevContext}\n\n`
         : '';
@@ -814,13 +952,16 @@ router.post('/analyze', async (req, res) => {
       const inputParaCount = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
       const inputCharLen = text.replace(/\s+/g, '').length;
 
-      const data = await callClaude(
-        [{ role: 'user', content: userContent }],
-        [humanizeTool], 0.9,
-        humanizeSystem,
-        { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
-      );
-      result = extractToolResult(data, humanizeTool.name);
+      const cacheName = await getCachedContentName('humanize', selectedMode, lang, humanizeSystem);
+      const data = await callGemini({
+        userText: userContent,
+        cachedContentName: cacheName,
+        systemText: cacheName ? null : humanizeSystem,
+        responseSchema: humanizeSchema,
+        temperature: 0.9,
+        maxOutputTokens: 16384
+      });
+      result = extractGeminiResult(data);
       verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
 
       // ★ 2-pass 폴백: critical 위반 1건 또는 minor 2건+일 때만 재호출 (비용 절약)
@@ -829,15 +970,17 @@ router.post('/analyze', async (req, res) => {
         const failed = collectFailedFields(result, selectedMode);
         console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
         const refineUser = `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${text}\n\n[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형을 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
-        const refineData = await callClaude(
-          [{ role: 'user', content: refineUser }],
-          [humanizeTool], 0.9,
-          humanizeSystem,
-          { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
-        );
-        result = extractToolResult(refineData, humanizeTool.name);
+        const refineData = await callGemini({
+          userText: refineUser,
+          cachedContentName: cacheName,
+          systemText: cacheName ? null : humanizeSystem,
+          responseSchema: humanizeSchema,
+          temperature: 0.9,
+          maxOutputTokens: 16384
+        });
+        result = extractGeminiResult(refineData);
         verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
-        refineUsage = refineData.usage;
+        refineUsage = refineData.usageMetadata;
         if (result.selfCheckPass === false) {
           console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
         }
@@ -845,7 +988,7 @@ router.post('/analyze', async (req, res) => {
 
       if (result.outputText) result.outputText = cleanText(result.outputText);
       if (!result.outputText) throw new Error('humanize_incomplete');
-      usage = data.usage;
+      usage = data.usageMetadata;
     }
   } catch (err) {
     console.error('/analyze LLM error:', err && err.message);
@@ -909,7 +1052,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     });
   }
 
-  // 2) Claude 호출 + 결과 검증 (실패 시 차감 없음)
+  // 2) Gemini 호출 + 결과 검증 (실패 시 차감 없음)
   let result;
   let usage;
   try {
@@ -917,17 +1060,21 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     const humanizeModePdf = req.body.humanizeMode || 'assignment';
     const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(humanizeModePdf, lang);
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
-    const activeTool = mode === 'detect' ? DETECT_TOOL : buildHumanizeTool(humanizeModePdf);
-    const pdfOptions = mode === 'detect'
-      ? { model: MODEL, maxTokens: 10000, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
-      : { maxTokens: 16384, toolChoice: { type: 'tool', name: activeTool.name } };
-    const data = await callClaude(
-      [{ role: 'user', content: userContent }],
-      [activeTool], undefined,
-      systemPrompt,
-      pdfOptions
-    );
-    result = extractToolResult(data, activeTool.name);
+    const responseSchema = mode === 'detect'
+      ? buildDetectResponseSchema()
+      : buildHumanizeResponseSchema(humanizeModePdf);
+    const cacheName = mode === 'detect'
+      ? await getCachedContentName('detect', null, lang, systemPrompt)
+      : await getCachedContentName('humanize', humanizeModePdf, lang, systemPrompt);
+    const data = await callGemini({
+      userText: userContent,
+      cachedContentName: cacheName,
+      systemText: cacheName ? null : systemPrompt,
+      responseSchema,
+      temperature: mode === 'detect' ? undefined : 0.9,
+      maxOutputTokens: mode === 'detect' ? 10000 : 16384
+    });
+    result = extractGeminiResult(data);
     if (mode === 'detect') {
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
         throw new Error('detect_incomplete');
@@ -936,7 +1083,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       if (result.outputText) result.outputText = cleanText(result.outputText);
       if (!result.outputText) throw new Error('humanize_incomplete');
     }
-    usage = data.usage;
+    usage = data.usageMetadata;
   } catch (err) {
     console.error('/analyze-pdf LLM error:', err && err.message);
     return res.status(500).json({ error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.' });
