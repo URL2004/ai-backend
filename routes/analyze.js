@@ -11,7 +11,7 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = 'gemini-3.1-pro';
+const MODEL = 'gemini-2.5-pro';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 // 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
