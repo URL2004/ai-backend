@@ -1,5 +1,5 @@
-// [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리 + OpenAI Chat Completions 호출 유틸
-// ★ Prompt caching: 시스템 프롬프트가 1024+ 토큰일 때 OpenAI가 자동 적용 (별도 API 호출 불필요)
+// [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리 + Gemini generateContent 호출 유틸
+// ★ Implicit context caching: 시스템 프롬프트 prefix가 4096+ 토큰일 때 Gemini가 자동 적용 (별도 호출 불필요)
 
 const express = require('express');
 const multer = require('multer');
@@ -10,9 +10,11 @@ const { admin, db } = require('../config');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const MODEL = 'gpt-5.4';
-const OPENAI_API_BASE = 'https://api.openai.com/v1';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const MODEL = 'gemini-3-pro-preview';
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+// thinking 비용 절감용 기본값. 어려운 케이스에서 품질 저하 보이면 'medium'/'high'로 상향.
+const THINKING_LEVEL = 'low';
 
 // 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
 async function precheckCredits(idToken, needed) {
@@ -252,27 +254,32 @@ const DETECT_TOOL = {
   }
 };
 
-// OpenAI Chat Completions 응답에서 결과 객체 추출
+// Gemini generateContent 응답에서 결과 객체 추출
 function extractGeminiResult(data) {
-  const choice = data?.choices?.[0];
-  if (!choice) throw new Error('모델이 응답을 반환하지 않았습니다.');
-  const msg = choice.message || {};
-  if (msg.refusal) {
-    throw new Error(`안전 필터에 의해 응답이 거부되었습니다: ${msg.refusal}`);
+  const block = data?.promptFeedback?.blockReason;
+  if (block) {
+    throw new Error(`프롬프트가 안전 필터에 의해 차단되었습니다: ${block}`);
   }
-  if (choice.finish_reason === 'content_filter') {
-    throw new Error('안전 필터에 의해 응답이 차단되었습니다.');
+  const candidate = data?.candidates?.[0];
+  if (!candidate) throw new Error('모델이 응답을 반환하지 않았습니다.');
+  const finish = candidate.finishReason;
+  // STOP, MAX_TOKENS는 본문이 있을 수 있어 통과시키고, 안전/정책 차단만 throw
+  const blockedReasons = ['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'RECITATION', 'SPII', 'IMAGE_SAFETY'];
+  if (finish && blockedReasons.includes(finish)) {
+    throw new Error(`응답이 안전/정책에 의해 차단되었습니다: ${finish}`);
   }
-  if (typeof msg.content !== 'string' || !msg.content.trim()) {
+  const parts = candidate.content?.parts || [];
+  const text = parts.map(p => (typeof p?.text === 'string' ? p.text : '')).join('').trim();
+  if (!text) {
     throw new Error('모델이 구조화 응답을 반환하지 않았습니다.');
   }
   let parsed;
   try {
-    parsed = JSON.parse(msg.content);
+    parsed = JSON.parse(text);
   } catch (e) {
     throw new Error('모델 응답 JSON 파싱 실패');
   }
-  // topNounCounts가 string으로 왔으면 객체로 정규화 (strict mode에선 string으로 평탄화됨)
+  // topNounCounts가 string으로 왔으면 객체로 정규화 (동적 키는 string으로 평탄화됨)
   if (parsed && typeof parsed.topNounCounts === 'string') {
     try { parsed.topNounCounts = JSON.parse(parsed.topNounCounts); }
     catch { parsed.topNounCounts = {}; }
@@ -283,11 +290,10 @@ function extractGeminiResult(data) {
   return parsed;
 }
 
-// JSON Schema → OpenAI strict json_schema 변환 어댑터
-// - 동적 키 object(additionalProperties로 type 지정)는 strict 미지원 → string으로 평탄화
-// - 모든 object 노드에 additionalProperties: false 강제
-// - 모든 properties는 required에 포함되도록 보강
-function toOpenAIStrictSchema(jsonSchema) {
+// JSON Schema → Gemini responseSchema 변환 어댑터
+// - 동적 키 object(additionalProperties로 type 지정)는 Gemini 미지원 → string으로 평탄화 후 서버에서 JSON.parse
+// - additionalProperties: false는 Gemini 스키마에서 불필요/미지원 → 추가하지 않음
+function toGeminiSchema(jsonSchema) {
   const clone = JSON.parse(JSON.stringify(jsonSchema));
   function walk(node) {
     if (!node || typeof node !== 'object') return;
@@ -301,13 +307,8 @@ function toOpenAIStrictSchema(jsonSchema) {
       node.description = oldDesc + ' (JSON object 문자열로 작성. 예: {"키":값,"키":값})';
       return;
     }
-    if (node.type === 'object') {
-      node.additionalProperties = false;
-      if (node.properties) {
-        // strict 모드는 모든 properties가 required여야 함
-        node.required = Object.keys(node.properties);
-        for (const k of Object.keys(node.properties)) walk(node.properties[k]);
-      }
+    if (node.type === 'object' && node.properties) {
+      for (const k of Object.keys(node.properties)) walk(node.properties[k]);
     }
     if (node.items) walk(node.items);
   }
@@ -316,10 +317,10 @@ function toOpenAIStrictSchema(jsonSchema) {
 }
 
 function buildDetectResponseSchema() {
-  return toOpenAIStrictSchema(DETECT_TOOL.input_schema);
+  return toGeminiSchema(DETECT_TOOL.input_schema);
 }
 function buildHumanizeResponseSchema(mode) {
-  return toOpenAIStrictSchema(buildHumanizeTool(mode).input_schema);
+  return toGeminiSchema(buildHumanizeTool(mode).input_schema);
 }
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
@@ -746,41 +747,41 @@ function cleanText(text) {
     .trim();
 }
 
-// ─── OpenAI Chat Completions API 호출 ─────────────────────────────
-// systemText는 항상 messages에 직접 전달. OpenAI는 1024+ 토큰 동일 prefix가 자동 prompt caching 적용 (별도 API 불필요).
-// 함수명은 호출부 호환을 위해 callGemini로 유지.
-async function callGemini({ userText, systemText, responseSchema, maxOutputTokens, responseMimeType }) {
-  if (!OPENAI_API_KEY) {
-    throw new Error('OPENAI_API_KEY is not configured');
+// ─── Gemini generateContent API 호출 ─────────────────────────────
+// systemText는 systemInstruction으로 전달. 동일 prefix가 4096+ 토큰이면 implicit context caching 자동 적용.
+// 호출부 호환을 위해 함수명은 callGemini, 반환 객체에 data.usage 별칭(OpenAI 호환 키)도 부착.
+async function callGemini({ userText, systemText, responseSchema, temperature, maxOutputTokens, responseMimeType }) {
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY is not configured');
   }
-  const messages = [];
-  if (systemText) messages.push({ role: 'system', content: systemText });
-  messages.push({ role: 'user', content: userText });
 
-  const body = {
-    model: MODEL,
-    messages
+  const generationConfig = {
+    thinkingConfig: { thinkingLevel: THINKING_LEVEL }
   };
-  // GPT-5 reasoning 계열은 temperature default(1)만 허용 → 호출부 인자는 무시
-  if (typeof maxOutputTokens === 'number') body.max_completion_tokens = maxOutputTokens;
+  if (typeof maxOutputTokens === 'number') generationConfig.maxOutputTokens = maxOutputTokens;
+  if (typeof temperature === 'number') generationConfig.temperature = temperature;
 
-  // structured output: strict json_schema (responseMimeType이 명시적으로 null인 경우만 비활성)
+  // structured output: responseMimeType이 명시적으로 null인 경우만 비활성
   const wantsJson = responseMimeType !== null;
   if (wantsJson && responseSchema) {
-    body.response_format = {
-      type: 'json_schema',
-      json_schema: { name: 'result', schema: responseSchema, strict: true }
-    };
+    generationConfig.responseMimeType = 'application/json';
+    generationConfig.responseSchema = responseSchema;
   }
-  // GPT-5.4 reasoning: medium이 Gemini thinking 4000과 비슷한 수준
-  body.reasoning_effort = 'medium';
 
-  const url = `${OPENAI_API_BASE}/chat/completions`;
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: userText }] }],
+    generationConfig
+  };
+  if (systemText) {
+    body.systemInstruction = { parts: [{ text: systemText }] };
+  }
+
+  const url = `${GEMINI_API_BASE}/models/${MODEL}:generateContent`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`
+      'x-goog-api-key': GEMINI_API_KEY
     },
     body: JSON.stringify(body)
   });
@@ -788,21 +789,29 @@ async function callGemini({ userText, systemText, responseSchema, maxOutputToken
 
   if (!response.ok) {
     const msg = data?.error?.message || response.statusText;
-    throw new Error(`OpenAI API ${response.status}: ${msg}`);
+    throw new Error(`Gemini API ${response.status}: ${msg}`);
   }
 
-  if (data.usage) {
-    const u = data.usage;
-    const cached = u.prompt_tokens_details?.cached_tokens || 0;
-    const reasoning = u.completion_tokens_details?.reasoning_tokens || 0;
+  if (data.usageMetadata) {
+    const u = data.usageMetadata;
+    const cached = u.cachedContentTokenCount || 0;
+    const thoughts = u.thoughtsTokenCount || 0;
     console.log("-----------------------------------------");
-    console.log(`📊 비용 리포트: 입력 ${u.prompt_tokens || 0} (캐시 ${cached}) / 출력 ${u.completion_tokens || 0} (reasoning ${reasoning}) / 총 ${u.total_tokens || 0}`);
+    console.log(`📊 비용 리포트: 입력 ${u.promptTokenCount || 0} (캐시 ${cached}) / 출력 ${u.candidatesTokenCount || 0} (thinking ${thoughts}) / 총 ${u.totalTokenCount || 0}`);
     console.log("-----------------------------------------");
+    // 호출부/프런트 호환: OpenAI usage 키로 별칭
+    data.usage = {
+      prompt_tokens: u.promptTokenCount || 0,
+      completion_tokens: u.candidatesTokenCount || 0,
+      total_tokens: u.totalTokenCount || 0,
+      prompt_tokens_details: { cached_tokens: cached },
+      completion_tokens_details: { reasoning_tokens: thoughts }
+    };
   }
 
-  const finish = data?.choices?.[0]?.finish_reason;
-  if (finish === 'length') {
-    console.log('⚠️ 응답이 max_tokens 제한으로 잘림');
+  const finish = data?.candidates?.[0]?.finishReason;
+  if (finish === 'MAX_TOKENS') {
+    console.log('⚠️ 응답이 maxOutputTokens 제한으로 잘림');
   }
 
   return data;
