@@ -806,6 +806,7 @@ async function callGemini({ userText, cachedContentName, systemText, responseSch
   if (typeof temperature === 'number') body.generationConfig.temperature = temperature;
   if (typeof maxOutputTokens === 'number') body.generationConfig.maxOutputTokens = maxOutputTokens;
   if (tools) body.tools = tools;
+  body.generationConfig.thinkingConfig = { thinkingBudget: 4000 };
 
   // 캐시 사용 시 systemInstruction은 캐시에 들어 있으므로 본문에는 넣지 않음
   if (cachedContentName) {
@@ -958,7 +959,7 @@ router.post('/analyze', async (req, res) => {
         cachedContentName: cacheName,
         systemText: cacheName ? null : humanizeSystem,
         responseSchema: humanizeSchema,
-        temperature: 0.9,
+        temperature: 0.5,
         maxOutputTokens: 16384
       });
       result = extractGeminiResult(data);
@@ -975,7 +976,7 @@ router.post('/analyze', async (req, res) => {
           cachedContentName: cacheName,
           systemText: cacheName ? null : humanizeSystem,
           responseSchema: humanizeSchema,
-          temperature: 0.9,
+          temperature: 0.5,
           maxOutputTokens: 16384
         });
         result = extractGeminiResult(refineData);
@@ -1071,7 +1072,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       cachedContentName: cacheName,
       systemText: cacheName ? null : systemPrompt,
       responseSchema,
-      temperature: mode === 'detect' ? undefined : 0.9,
+      temperature: mode === 'detect' ? undefined : 0.5,
       maxOutputTokens: mode === 'detect' ? 10000 : 16384
     });
     result = extractGeminiResult(data);
