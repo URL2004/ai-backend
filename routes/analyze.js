@@ -749,7 +749,7 @@ function cleanText(text) {
 // ─── OpenAI Chat Completions API 호출 ─────────────────────────────
 // systemText는 항상 messages에 직접 전달. OpenAI는 1024+ 토큰 동일 prefix가 자동 prompt caching 적용 (별도 API 불필요).
 // 함수명은 호출부 호환을 위해 callGemini로 유지.
-async function callGemini({ userText, systemText, responseSchema, temperature, maxOutputTokens, responseMimeType }) {
+async function callGemini({ userText, systemText, responseSchema, maxOutputTokens, responseMimeType }) {
   if (!OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is not configured');
   }
@@ -761,7 +761,7 @@ async function callGemini({ userText, systemText, responseSchema, temperature, m
     model: MODEL,
     messages
   };
-  if (typeof temperature === 'number') body.temperature = temperature;
+  // GPT-5 reasoning 계열은 temperature default(1)만 허용 → 호출부 인자는 무시
   if (typeof maxOutputTokens === 'number') body.max_completion_tokens = maxOutputTokens;
 
   // structured output: strict json_schema (responseMimeType이 명시적으로 null인 경우만 비활성)
