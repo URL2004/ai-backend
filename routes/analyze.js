@@ -847,7 +847,7 @@ async function applyPassC(result, lang) {
 // ─── Anthropic Messages API 호출 ─────────────────────────────
 // 시스템 프롬프트는 cache_control: ephemeral로 5분 TTL 자동 캐싱 (1024+ 토큰 필요).
 // 구조화 출력은 tool + tool_choice 강제 호출로 처리.
-async function callClaude({ userText, systemText, tool, temperature, maxOutputTokens }) {
+async function callClaude({ userText, systemText, tool, temperature, maxOutputTokens, thinkingBudget }) {
   if (!ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is not configured');
   }
@@ -857,7 +857,12 @@ async function callClaude({ userText, systemText, tool, temperature, maxOutputTo
     max_tokens: typeof maxOutputTokens === 'number' ? maxOutputTokens : 8192,
     messages: [{ role: 'user', content: userText }]
   };
-  if (typeof temperature === 'number') body.temperature = temperature;
+  // Extended thinking 활성화 시 temperature는 Anthropic이 1로 강제 → 별도 지정 안 함.
+  if (typeof thinkingBudget === 'number' && thinkingBudget >= 1024) {
+    body.thinking = { type: 'enabled', budget_tokens: thinkingBudget };
+  } else if (typeof temperature === 'number') {
+    body.temperature = temperature;
+  }
 
   if (systemText) {
     body.system = [{
@@ -902,6 +907,13 @@ async function callClaude({ userText, systemText, tool, temperature, maxOutputTo
   }
 
   return data;
+}
+
+// Extended thinking budget: 입력 길이에 따라 적응형. 1차 휴머나이즈 호출에만 사용 (2-pass refine은 미사용).
+function thinkingBudgetForLength(charLen) {
+  if (charLen < 1500) return 2000;
+  if (charLen < 4000) return 4000;
+  return 6000;
 }
 
 // 웹 검색: Anthropic Messages API의 web_search 서버 도구 사용 (default ON).
@@ -1003,9 +1015,9 @@ router.post('/analyze', async (req, res) => {
       }
       usage = data.usage;
     } else {
-      // 웹 검색: 기본 ON, 프런트에서 useWebSearch=false로 명시했을 때만 OFF.
+      // 웹 검색: 프런트에서 useWebSearch=true로 켰을 때만 실행 (기본 OFF, 버튼 토글).
       // 실패/빈 응답이면 examples=null로 자연 폴백.
-      const useWebSearch = req.body.useWebSearch !== false;
+      const useWebSearch = req.body.useWebSearch === true;
       const examples = useWebSearch ? await fetchWebSearchExamples(text, lang) : null;
 
       // ★ 휴머나이저: 고정 시스템 프롬프트는 cache_control: ephemeral로 캐싱, 유저 텍스트만 별도
@@ -1021,11 +1033,12 @@ router.post('/analyze', async (req, res) => {
       const inputParaCount = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
       const inputCharLen = text.replace(/\s+/g, '').length;
 
+      // 1차 호출: extended thinking ON (룰 컴플라이언스 향상). budget은 입력 길이 적응형.
       const data = await callClaude({
         userText: userContent,
         systemText: humanizeSystem,
         tool: humanizeTool,
-        temperature: 0.5,
+        thinkingBudget: thinkingBudgetForLength(text.length),
         maxOutputTokens: 16384
       });
       result = extractClaudeResult(data, humanizeTool.name);
@@ -1040,6 +1053,7 @@ router.post('/analyze', async (req, res) => {
         const failed = collectFailedFields(result, selectedMode);
         console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
         const refineUser = `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${text}\n\n[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형을 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
+        // 2-pass refine: thinking OFF (위반 항목이 명시되어 표면 수정 작업이라 reasoning 효용 작음 + 비용 절감).
         const refineData = await callClaude({
           userText: refineUser,
           systemText: humanizeSystem,
@@ -1135,6 +1149,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       systemText: systemPrompt,
       tool,
       temperature: mode === 'detect' ? undefined : 0.5,
+      thinkingBudget: mode === 'detect' ? undefined : thinkingBudgetForLength(text.length),
       maxOutputTokens: mode === 'detect' ? 4096 : 16384
     });
     result = extractClaudeResult(data, tool.name);
