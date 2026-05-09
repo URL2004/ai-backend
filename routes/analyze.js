@@ -348,6 +348,18 @@ function buildGeminiFunctionDeclaration(anthropicTool) {
 
 // ─── Gemini 2.5 Pro 호출 ─────────────────────────────────────────
 // 휴머나이즈 전용. tool 인자가 있으면 function calling을 강제(mode: ANY)로 호출한다.
+// 503/429/일부 5xx는 일시적 과부하 — 지수 백오프로 자동 재시도(최대 3회).
+const GEMINI_RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
+const GEMINI_MAX_RETRIES = 2; // 초기 1회 + 재시도 2회 = 최대 3회 시도
+
+function geminiBackoffMs(attempt) {
+  // attempt: 0,1,2 → ~800ms, ~1.6s, ~3.2s + 0~400ms jitter
+  const base = 800 * Math.pow(2, attempt);
+  return base + Math.floor(Math.random() * 400);
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 async function callGemini({ userText, systemText, tool, temperature, maxOutputTokens }) {
   if (!GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY is not configured');
@@ -375,31 +387,65 @@ async function callGemini({ userText, systemText, tool, temperature, maxOutputTo
   }
 
   const url = `${GEMINI_API_BASE}/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const data = await response.json();
+  const payload = JSON.stringify(body);
 
-  if (!response.ok) {
-    const msg = data?.error?.message || response.statusText;
-    throw new Error(`Gemini API ${response.status}: ${msg}`);
+  let lastErrStatus = 0;
+  let lastErrMsg = '';
+  for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+      });
+    } catch (e) {
+      // 네트워크 오류: 재시도
+      lastErrStatus = 0;
+      lastErrMsg = `network: ${e?.message || 'unknown'}`;
+      if (attempt < GEMINI_MAX_RETRIES) {
+        const wait = geminiBackoffMs(attempt);
+        console.log(`⏳ Gemini 네트워크 오류 (${lastErrMsg}). ${wait}ms 후 재시도 (${attempt + 1}/${GEMINI_MAX_RETRIES})`);
+        await sleep(wait);
+        continue;
+      }
+      throw new Error(`Gemini API 네트워크 오류: ${lastErrMsg}`);
+    }
+
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+
+    if (response.ok) {
+      if (data?.usageMetadata) {
+        const u = data.usageMetadata;
+        console.log("-----------------------------------------");
+        console.log(`📊 Gemini 비용 리포트: 입력 ${u.promptTokenCount || 0} / 출력 ${u.candidatesTokenCount || 0} / 총 ${u.totalTokenCount || 0}`);
+        console.log("-----------------------------------------");
+      }
+      const finishReason = data?.candidates?.[0]?.finishReason;
+      if (finishReason === 'MAX_TOKENS') {
+        console.log('⚠️ Gemini 응답이 maxOutputTokens 제한으로 잘림');
+      }
+      return data;
+    }
+
+    lastErrStatus = response.status;
+    lastErrMsg = data?.error?.message || response.statusText;
+    const retryable = GEMINI_RETRY_STATUSES.has(response.status);
+    if (retryable && attempt < GEMINI_MAX_RETRIES) {
+      const wait = geminiBackoffMs(attempt);
+      console.log(`⏳ Gemini ${response.status} (${lastErrMsg}). ${wait}ms 후 재시도 (${attempt + 1}/${GEMINI_MAX_RETRIES})`);
+      await sleep(wait);
+      continue;
+    }
+    throw new Error(`Gemini API ${response.status}: ${lastErrMsg}`);
   }
-
-  if (data.usageMetadata) {
-    const u = data.usageMetadata;
-    console.log("-----------------------------------------");
-    console.log(`📊 Gemini 비용 리포트: 입력 ${u.promptTokenCount || 0} / 출력 ${u.candidatesTokenCount || 0} / 총 ${u.totalTokenCount || 0}`);
-    console.log("-----------------------------------------");
-  }
-
-  const finishReason = data?.candidates?.[0]?.finishReason;
-  if (finishReason === 'MAX_TOKENS') {
-    console.log('⚠️ Gemini 응답이 maxOutputTokens 제한으로 잘림');
-  }
-
-  return data;
+  // 도달 불가 — 안전망
+  throw new Error(`Gemini API ${lastErrStatus}: ${lastErrMsg}`);
 }
 
 // Gemini 응답에서 functionCall 블록 추출. tool_choice ANY + allowedFunctionNames로 강제했으므로
