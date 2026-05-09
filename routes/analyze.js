@@ -1,12 +1,10 @@
 // [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리
-// ★ 탐지(detect) + 웹 검색은 Anthropic Claude.
-// ★ 휴머나이즈는 Vertex AI Gemini 2.5 Pro (function calling). Firebase SA로 OAuth 인증 재사용.
-// ★ Anthropic prompt caching: detect 시스템 프롬프트에 cache_control: ephemeral (5분 TTL, 1024+ 토큰).
+// ★ 탐지(detect)·휴머나이즈·웹 검색 모두 Anthropic Claude.
+// ★ Anthropic prompt caching: detect/humanize 시스템 프롬프트에 cache_control: ephemeral (5분 TTL, 1024+ 토큰).
 
 const express = require('express');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
-const { JWT } = require('google-auth-library');
 const { getDetectSystem, getHumanizeSystem } = require('../prompts');
 const { admin, db } = require('../config');
 
@@ -17,50 +15,6 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-6';
 const WEB_SEARCH_MODEL = 'claude-haiku-4-5';
 const ANTHROPIC_API_BASE = 'https://api.anthropic.com/v1';
-
-// ─── Vertex AI Gemini 설정 ───────────────────────────────────
-// Firebase 서비스 계정(FIREBASE_SERVICE_ACCOUNT)에 Vertex AI User(roles/aiplatform.user)
-// 권한을 부여하면 동일 SA로 OAuth 토큰을 발급받아 Vertex Gemini를 호출한다.
-// project_id는 SA JSON에서 자동 추출(GCP_PROJECT_ID 환경변수로 오버라이드 가능).
-const VERTEX_MODEL = process.env.VERTEX_MODEL || 'gemini-2.5-pro';
-const VERTEX_LOCATION = process.env.VERTEX_LOCATION || 'asia-northeast3';
-let _VERTEX_SA = null;
-try { _VERTEX_SA = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}'); } catch { _VERTEX_SA = null; }
-const VERTEX_PROJECT_ID = process.env.GCP_PROJECT_ID || _VERTEX_SA?.project_id || '';
-
-let _vertexAuthClient = null;
-function getVertexAuthClient() {
-  if (_vertexAuthClient) return _vertexAuthClient;
-  if (!_VERTEX_SA?.client_email || !_VERTEX_SA?.private_key) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT가 설정되지 않았거나 client_email/private_key가 없습니다.');
-  }
-  _vertexAuthClient = new JWT({
-    email: _VERTEX_SA.client_email,
-    key: _VERTEX_SA.private_key,
-    scopes: ['https://www.googleapis.com/auth/cloud-platform']
-  });
-  return _vertexAuthClient;
-}
-
-// JWT 클라이언트가 토큰을 내부 캐시(만료 직전 자동 갱신)하므로 매 호출마다 getAccessToken 호출해도 안전.
-async function getVertexAccessToken() {
-  const client = getVertexAuthClient();
-  const t = await client.getAccessToken();
-  const token = typeof t === 'string' ? t : t?.token;
-  if (!token) throw new Error('Vertex AI 액세스 토큰 발급 실패');
-  return token;
-}
-
-function getVertexEndpoint() {
-  if (!VERTEX_PROJECT_ID) {
-    throw new Error('Vertex AI 프로젝트 ID 누락 (GCP_PROJECT_ID 또는 FIREBASE_SERVICE_ACCOUNT.project_id 필요)');
-  }
-  // global 리전은 호스트명에 리전 prefix가 붙지 않음 (us-central1 등 일반 리전과 URL 패턴이 다름).
-  const host = VERTEX_LOCATION === 'global'
-    ? 'aiplatform.googleapis.com'
-    : `${VERTEX_LOCATION}-aiplatform.googleapis.com`;
-  return `https://${host}/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
-}
 
 // 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
 async function precheckCredits(idToken, needed) {
@@ -340,224 +294,6 @@ function getDetectTool() {
 }
 function getHumanizeToolFor(mode) {
   return buildHumanizeTool(mode);
-}
-
-// ─── Gemini function calling 스키마 변환 ─────────────────────────
-// Anthropic input_schema → Gemini parameters (OpenAPI 3.0 subset).
-// 핵심 차이: Gemini function declaration은 임의 키 매핑(additionalProperties로 표현되는 map<string,T>)을
-// 안정적으로 받지 못하는 경우가 있어, 해당 객체 필드는 string으로 다운그레이드한다.
-// 모델이 JSON 객체 문자열로 반환 → extractGeminiResult에서 JSON.parse로 정규화.
-function toGeminiSchema(schema) {
-  if (!schema || typeof schema !== 'object') return schema;
-
-  // additionalProperties로 표현되는 map → string (JSON encoded)
-  if (schema.type === 'object' && schema.additionalProperties && !schema.properties) {
-    return {
-      type: 'string',
-      description: (schema.description || '') +
-        ' 반드시 JSON 객체 문자열로 반환하라. 예: {"배출":2,"정부":1}'
-    };
-  }
-
-  if (schema.type === 'object' && schema.properties) {
-    const newProps = {};
-    for (const [k, v] of Object.entries(schema.properties)) {
-      newProps[k] = toGeminiSchema(v);
-    }
-    const out = { type: 'object', properties: newProps };
-    if (schema.description) out.description = schema.description;
-    if (Array.isArray(schema.required)) out.required = schema.required;
-    return out;
-  }
-
-  if (schema.type === 'array' && schema.items) {
-    const out = { type: 'array', items: toGeminiSchema(schema.items) };
-    if (schema.description) out.description = schema.description;
-    return out;
-  }
-
-  // 원시 타입은 그대로
-  return schema;
-}
-
-function buildGeminiFunctionDeclaration(anthropicTool) {
-  return {
-    name: anthropicTool.name,
-    description: anthropicTool.description,
-    parameters: toGeminiSchema(anthropicTool.input_schema)
-  };
-}
-
-// ─── Gemini 2.5 Pro 호출 ─────────────────────────────────────────
-// 휴머나이즈 전용. tool 인자가 있으면 function calling을 강제(mode: ANY)로 호출한다.
-// 503/429/일부 5xx는 일시적 과부하 — 지수 백오프로 자동 재시도(최대 3회).
-const GEMINI_RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
-const GEMINI_MAX_RETRIES = 2; // 초기 1회 + 재시도 2회 = 최대 3회 시도
-
-function geminiBackoffMs(attempt) {
-  // attempt: 0,1,2 → ~800ms, ~1.6s, ~3.2s + 0~400ms jitter
-  const base = 800 * Math.pow(2, attempt);
-  return base + Math.floor(Math.random() * 400);
-}
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-async function callGemini({ userText, systemText, tool, temperature, maxOutputTokens }) {
-  const url = getVertexEndpoint(); // 환경변수 누락 시 여기서 throw
-
-  const body = {
-    contents: [{ role: 'user', parts: [{ text: userText }] }],
-    generationConfig: {
-      maxOutputTokens: typeof maxOutputTokens === 'number' ? maxOutputTokens : 8192
-    }
-  };
-  if (typeof temperature === 'number') body.generationConfig.temperature = temperature;
-
-  // Gemini 2.5/3.x는 응답 전에 thinking 토큰을 maxOutputTokens 예산에서 같이 차감.
-  // 휴머나이저는 다중 제약 검증이 필요해 적절한 thinking이 품질에 도움 → 8162로 캡해 비용/잘림 둘 다 방지.
-  // 환경변수 GEMINI_THINKING_BUDGET 설정 시 그 값으로 오버라이드.
-  const thinkingBudgetEnv = process.env.GEMINI_THINKING_BUDGET;
-  const thinkingBudget = (thinkingBudgetEnv !== undefined && thinkingBudgetEnv !== '')
-    ? parseInt(thinkingBudgetEnv, 10)
-    : 8162;
-  if (Number.isFinite(thinkingBudget) && thinkingBudget >= 0) {
-    body.generationConfig.thinkingConfig = { thinkingBudget };
-  }
-  if (systemText) {
-    body.systemInstruction = { parts: [{ text: systemText }] };
-  }
-  if (tool) {
-    const fnDecl = buildGeminiFunctionDeclaration(tool);
-    body.tools = [{ functionDeclarations: [fnDecl] }];
-    body.toolConfig = {
-      functionCallingConfig: {
-        mode: 'ANY',
-        allowedFunctionNames: [fnDecl.name]
-      }
-    };
-  }
-
-  const payload = JSON.stringify(body);
-
-  let lastErrStatus = 0;
-  let lastErrMsg = '';
-  for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
-    let response;
-    try {
-      const accessToken = await getVertexAccessToken();
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: payload
-      });
-    } catch (e) {
-      // 네트워크 오류: 재시도
-      lastErrStatus = 0;
-      lastErrMsg = `network: ${e?.message || 'unknown'}`;
-      if (attempt < GEMINI_MAX_RETRIES) {
-        const wait = geminiBackoffMs(attempt);
-        console.log(`⏳ Gemini 네트워크 오류 (${lastErrMsg}). ${wait}ms 후 재시도 (${attempt + 1}/${GEMINI_MAX_RETRIES})`);
-        await sleep(wait);
-        continue;
-      }
-      throw new Error(`Gemini API 네트워크 오류: ${lastErrMsg}`);
-    }
-
-    let data;
-    try {
-      data = await response.json();
-    } catch {
-      data = null;
-    }
-
-    if (response.ok) {
-      if (data?.usageMetadata) {
-        const u = data.usageMetadata;
-        console.log("-----------------------------------------");
-        console.log(`📊 Vertex Gemini 비용 리포트: 입력 ${u.promptTokenCount || 0} / 출력 ${u.candidatesTokenCount || 0} / 총 ${u.totalTokenCount || 0}`);
-        console.log("-----------------------------------------");
-      }
-      const finishReason = data?.candidates?.[0]?.finishReason;
-      if (finishReason === 'MAX_TOKENS') {
-        console.log('⚠️ Vertex Gemini 응답이 maxOutputTokens 제한으로 잘림');
-      }
-      return data;
-    }
-
-    lastErrStatus = response.status;
-    lastErrMsg = data?.error?.message || response.statusText;
-    const retryable = GEMINI_RETRY_STATUSES.has(response.status);
-    if (retryable && attempt < GEMINI_MAX_RETRIES) {
-      const wait = geminiBackoffMs(attempt);
-      console.log(`⏳ Vertex Gemini ${response.status} (${lastErrMsg}). ${wait}ms 후 재시도 (${attempt + 1}/${GEMINI_MAX_RETRIES})`);
-      await sleep(wait);
-      continue;
-    }
-    throw new Error(`Vertex Gemini API ${response.status}: ${lastErrMsg}`);
-  }
-  // 도달 불가 — 안전망
-  throw new Error(`Vertex Gemini API ${lastErrStatus}: ${lastErrMsg}`);
-}
-
-// Gemini 응답에서 functionCall 블록 추출. tool_choice ANY + allowedFunctionNames로 강제했으므로
-// 정상 응답이면 항상 지정된 functionCall이 반환된다.
-function extractGeminiResult(data, toolName) {
-  if (data?.error) {
-    throw new Error(`Gemini 응답 오류: ${data.error.message || 'unknown'}`);
-  }
-  const candidate = data?.candidates?.[0];
-  if (!candidate) {
-    if (data?.promptFeedback?.blockReason) {
-      throw new Error(`안전 필터에 의해 응답이 차단되었습니다: ${data.promptFeedback.blockReason}`);
-    }
-    throw new Error('Gemini 응답이 비어 있습니다.');
-  }
-  const finishReason = candidate.finishReason;
-  if (finishReason === 'SAFETY' || finishReason === 'BLOCKLIST' || finishReason === 'PROHIBITED_CONTENT' || finishReason === 'SPII' || finishReason === 'IMAGE_SAFETY') {
-    throw new Error('안전 필터에 의해 응답이 차단되었습니다.');
-  }
-  if (finishReason === 'RECITATION') {
-    // 저작권/인용 차단: 휴머나이저가 원문을 너무 그대로 옮겼을 때 발생.
-    throw new Error('Gemini RECITATION 차단: 출력이 원문과 너무 유사해 차단되었습니다. (재시도 권장)');
-  }
-  if (finishReason === 'MALFORMED_FUNCTION_CALL') {
-    throw new Error('Gemini가 잘못된 형식의 함수 호출을 반환했습니다.');
-  }
-  if (finishReason === 'MAX_TOKENS') {
-    throw new Error('응답이 maxOutputTokens 제한으로 잘렸습니다.');
-  }
-  const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
-  const callPart = parts.find(p => p && p.functionCall && p.functionCall.name === toolName);
-  if (!callPart) {
-    throw new Error('Gemini가 구조화 응답을 반환하지 않았습니다.');
-  }
-  const args = callPart.functionCall.args && typeof callPart.functionCall.args === 'object'
-    ? callPart.functionCall.args
-    : {};
-
-  // topNounCounts: Gemini 스키마에선 string으로 다운그레이드되어 옴 → 객체로 정규화
-  if (typeof args.topNounCounts === 'string') {
-    try { args.topNounCounts = JSON.parse(args.topNounCounts); }
-    catch { args.topNounCounts = {}; }
-  }
-  if (args.topNounCounts && typeof args.topNounCounts !== 'object') {
-    args.topNounCounts = {};
-  }
-  return args;
-}
-
-// 응답 usage 정규화: 프런트가 Anthropic 형태(input_tokens/output_tokens)에 맞춰져 있다면 매핑.
-function normalizeGeminiUsage(geminiUsage) {
-  if (!geminiUsage) return undefined;
-  return {
-    input_tokens: geminiUsage.promptTokenCount || 0,
-    output_tokens: geminiUsage.candidatesTokenCount || 0,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0
-  };
 }
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
@@ -1030,7 +766,7 @@ function enforceMechanicalRules(text) {
 // Tier 2: 3개 이상 콤마 나열을 그 문장만 LLM 외과수술로 해체.
 // 위반 문장 1개당 micro-call (~150 토큰), 다른 문장은 손대지 않음.
 async function fixListsOfThree(text, lang) {
-  if (!text || !VERTEX_PROJECT_ID) return text;
+  if (!text || !ANTHROPIC_API_KEY) return text;
 
   // verifyCheckFields와 동일 기준으로 문장 분리
   const sentences = text.split(/(?<=[.!?？。])\s+|\n+/).map(s => s.trim()).filter(Boolean);
@@ -1074,25 +810,21 @@ Sentence: ${sentence}`
 
 문장: ${sentence}`;
 
-  // Vertex Gemini 텍스트 생성 (tool 없이) — 외과수술용 micro-call. 실패는 best-effort 폴백.
+  // Claude 텍스트 생성 (tool 없이) — 외과수술용 micro-call. 실패는 best-effort 폴백.
   let response;
   try {
-    const url = getVertexEndpoint();
-    const accessToken = await getVertexAccessToken();
-    response = await fetch(url, {
+    response = await fetch(`${ANTHROPIC_API_BASE}/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${accessToken}`
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        // 단순 한 문장 재작성이라 thinking은 최소(128)로 캡 — 안 그러면 dynamic thinking이 512 budget을 다 먹어 출력 잘림.
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 512,
-          thinkingConfig: { thinkingBudget: 128 }
-        }
+        model: MODEL,
+        max_tokens: 512,
+        temperature: 0.3,
+        messages: [{ role: 'user', content: prompt }]
       })
     });
   } catch {
@@ -1100,16 +832,11 @@ Sentence: ${sentence}`
   }
   if (!response.ok) return null;
   const data = await response.json();
-  const candidate = data?.candidates?.[0];
-  const finishReason = candidate?.finishReason;
-  if (finishReason === 'SAFETY' || finishReason === 'BLOCKLIST' || finishReason === 'PROHIBITED_CONTENT' || finishReason === 'SPII' || finishReason === 'IMAGE_SAFETY' || finishReason === 'RECITATION') {
-    return null; // micro-call 실패 → 원문 유지 (best-effort)
-  }
-  const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+  if (data?.stop_reason === 'refusal') return null;
+  const blocks = Array.isArray(data?.content) ? data.content : [];
   let out = '';
-  // thought 파트는 제외 (includeThoughts는 default off지만 방어적으로 필터)
-  for (const p of parts) {
-    if (p && typeof p.text === 'string' && p.thought !== true) out += p.text;
+  for (const b of blocks) {
+    if (b && b.type === 'text' && typeof b.text === 'string') out += b.text;
   }
   out = out.trim();
   return out || null;
@@ -1289,7 +1016,7 @@ router.post('/analyze', async (req, res) => {
       const useWebSearch = req.body.useWebSearch !== false;
       const examples = useWebSearch ? await fetchWebSearchExamples(text, lang) : null;
 
-      // ★ 휴머나이저: Gemini 2.5 Pro function calling으로 호출. 시스템 프롬프트는 그대로.
+      // ★ 휴머나이저: Claude Sonnet tool_use(강제)로 호출. 시스템 프롬프트는 그대로.
       const selectedMode = req.body.humanizeMode || 'assignment';
       const humanizeSystem = getHumanizeSystem(selectedMode, lang);
       const humanizeTool = getHumanizeToolFor(selectedMode);
@@ -1302,14 +1029,14 @@ router.post('/analyze', async (req, res) => {
       const inputParaCount = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
       const inputCharLen = text.replace(/\s+/g, '').length;
 
-      const data = await callGemini({
+      const data = await callClaude({
         userText: userContent,
         systemText: humanizeSystem,
         tool: humanizeTool,
         temperature: 0.5,
         maxOutputTokens: 16384
       });
-      result = extractGeminiResult(data, humanizeTool.name);
+      result = extractClaudeResult(data, humanizeTool.name);
       // Pass C: cleanText + 결정론적 mechanical 후처리 (특수문자, GPT-ism, 3+ 나열).
       // verifyCheckFields가 후처리된 텍스트를 보게 해서 2-pass가 mechanical 위반으론 발동하지 않게 함.
       await applyPassC(result, lang);
@@ -1321,24 +1048,24 @@ router.post('/analyze', async (req, res) => {
         const failed = collectFailedFields(result, selectedMode);
         console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
         const refineUser = `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${text}\n\n[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형을 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
-        const refineData = await callGemini({
+        const refineData = await callClaude({
           userText: refineUser,
           systemText: humanizeSystem,
           tool: humanizeTool,
           temperature: 0.5,
           maxOutputTokens: 16384
         });
-        result = extractGeminiResult(refineData, humanizeTool.name);
+        result = extractClaudeResult(refineData, humanizeTool.name);
         await applyPassC(result, lang);
         verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
-        refineUsage = normalizeGeminiUsage(refineData.usageMetadata);
+        refineUsage = refineData.usage;
         if (result.selfCheckPass === false) {
           console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
         }
       }
 
       if (!result.outputText) throw new Error('humanize_incomplete');
-      usage = normalizeGeminiUsage(data.usageMetadata);
+      usage = data.usage;
     }
   } catch (err) {
     console.error('/analyze LLM error:', err && err.message);
@@ -1425,17 +1152,17 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     } else {
       const humanizeSystem = getHumanizeSystem(humanizeModePdf, lang);
       const humanizeTool = getHumanizeToolFor(humanizeModePdf);
-      const data = await callGemini({
+      const data = await callClaude({
         userText: `[재작성할 텍스트]\n${text}`,
         systemText: humanizeSystem,
         tool: humanizeTool,
         temperature: 0.5,
         maxOutputTokens: 16384
       });
-      result = extractGeminiResult(data, humanizeTool.name);
+      result = extractClaudeResult(data, humanizeTool.name);
       await applyPassC(result, lang);
       if (!result.outputText) throw new Error('humanize_incomplete');
-      usage = normalizeGeminiUsage(data.usageMetadata);
+      usage = data.usage;
     }
   } catch (err) {
     console.error('/analyze-pdf LLM error:', err && err.message);
