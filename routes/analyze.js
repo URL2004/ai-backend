@@ -1,10 +1,12 @@
 // [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리
-// ★ 탐지(detect) + 웹 검색은 Anthropic Claude. 휴머나이즈는 Gemini 2.5 Pro (function calling).
+// ★ 탐지(detect) + 웹 검색은 Anthropic Claude.
+// ★ 휴머나이즈는 Vertex AI Gemini 2.5 Pro (function calling). Firebase SA로 OAuth 인증 재사용.
 // ★ Anthropic prompt caching: detect 시스템 프롬프트에 cache_control: ephemeral (5분 TTL, 1024+ 토큰).
 
 const express = require('express');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
+const { JWT } = require('google-auth-library');
 const { getDetectSystem, getHumanizeSystem } = require('../prompts');
 const { admin, db } = require('../config');
 
@@ -16,9 +18,49 @@ const MODEL = 'claude-sonnet-4-6';
 const WEB_SEARCH_MODEL = 'claude-haiku-4-5';
 const ANTHROPIC_API_BASE = 'https://api.anthropic.com/v1';
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-2.5-pro';
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+// ─── Vertex AI Gemini 설정 ───────────────────────────────────
+// Firebase 서비스 계정(FIREBASE_SERVICE_ACCOUNT)에 Vertex AI User(roles/aiplatform.user)
+// 권한을 부여하면 동일 SA로 OAuth 토큰을 발급받아 Vertex Gemini를 호출한다.
+// project_id는 SA JSON에서 자동 추출(GCP_PROJECT_ID 환경변수로 오버라이드 가능).
+const VERTEX_MODEL = process.env.VERTEX_MODEL || 'gemini-2.5-pro';
+const VERTEX_LOCATION = process.env.VERTEX_LOCATION || 'asia-northeast3';
+let _VERTEX_SA = null;
+try { _VERTEX_SA = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}'); } catch { _VERTEX_SA = null; }
+const VERTEX_PROJECT_ID = process.env.GCP_PROJECT_ID || _VERTEX_SA?.project_id || '';
+
+let _vertexAuthClient = null;
+function getVertexAuthClient() {
+  if (_vertexAuthClient) return _vertexAuthClient;
+  if (!_VERTEX_SA?.client_email || !_VERTEX_SA?.private_key) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT가 설정되지 않았거나 client_email/private_key가 없습니다.');
+  }
+  _vertexAuthClient = new JWT({
+    email: _VERTEX_SA.client_email,
+    key: _VERTEX_SA.private_key,
+    scopes: ['https://www.googleapis.com/auth/cloud-platform']
+  });
+  return _vertexAuthClient;
+}
+
+// JWT 클라이언트가 토큰을 내부 캐시(만료 직전 자동 갱신)하므로 매 호출마다 getAccessToken 호출해도 안전.
+async function getVertexAccessToken() {
+  const client = getVertexAuthClient();
+  const t = await client.getAccessToken();
+  const token = typeof t === 'string' ? t : t?.token;
+  if (!token) throw new Error('Vertex AI 액세스 토큰 발급 실패');
+  return token;
+}
+
+function getVertexEndpoint() {
+  if (!VERTEX_PROJECT_ID) {
+    throw new Error('Vertex AI 프로젝트 ID 누락 (GCP_PROJECT_ID 또는 FIREBASE_SERVICE_ACCOUNT.project_id 필요)');
+  }
+  // global 리전은 호스트명에 리전 prefix가 붙지 않음 (us-central1 등 일반 리전과 URL 패턴이 다름).
+  const host = VERTEX_LOCATION === 'global'
+    ? 'aiplatform.googleapis.com'
+    : `${VERTEX_LOCATION}-aiplatform.googleapis.com`;
+  return `https://${host}/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
+}
 
 // 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
 async function precheckCredits(idToken, needed) {
@@ -361,9 +403,7 @@ function geminiBackoffMs(attempt) {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function callGemini({ userText, systemText, tool, temperature, maxOutputTokens }) {
-  if (!GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY is not configured');
-  }
+  const url = getVertexEndpoint(); // 환경변수 누락 시 여기서 throw
 
   const body = {
     contents: [{ role: 'user', parts: [{ text: userText }] }],
@@ -386,7 +426,6 @@ async function callGemini({ userText, systemText, tool, temperature, maxOutputTo
     };
   }
 
-  const url = `${GEMINI_API_BASE}/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
   const payload = JSON.stringify(body);
 
   let lastErrStatus = 0;
@@ -394,9 +433,13 @@ async function callGemini({ userText, systemText, tool, temperature, maxOutputTo
   for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
     let response;
     try {
+      const accessToken = await getVertexAccessToken();
       response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
         body: payload
       });
     } catch (e) {
@@ -423,12 +466,12 @@ async function callGemini({ userText, systemText, tool, temperature, maxOutputTo
       if (data?.usageMetadata) {
         const u = data.usageMetadata;
         console.log("-----------------------------------------");
-        console.log(`📊 Gemini 비용 리포트: 입력 ${u.promptTokenCount || 0} / 출력 ${u.candidatesTokenCount || 0} / 총 ${u.totalTokenCount || 0}`);
+        console.log(`📊 Vertex Gemini 비용 리포트: 입력 ${u.promptTokenCount || 0} / 출력 ${u.candidatesTokenCount || 0} / 총 ${u.totalTokenCount || 0}`);
         console.log("-----------------------------------------");
       }
       const finishReason = data?.candidates?.[0]?.finishReason;
       if (finishReason === 'MAX_TOKENS') {
-        console.log('⚠️ Gemini 응답이 maxOutputTokens 제한으로 잘림');
+        console.log('⚠️ Vertex Gemini 응답이 maxOutputTokens 제한으로 잘림');
       }
       return data;
     }
@@ -438,14 +481,14 @@ async function callGemini({ userText, systemText, tool, temperature, maxOutputTo
     const retryable = GEMINI_RETRY_STATUSES.has(response.status);
     if (retryable && attempt < GEMINI_MAX_RETRIES) {
       const wait = geminiBackoffMs(attempt);
-      console.log(`⏳ Gemini ${response.status} (${lastErrMsg}). ${wait}ms 후 재시도 (${attempt + 1}/${GEMINI_MAX_RETRIES})`);
+      console.log(`⏳ Vertex Gemini ${response.status} (${lastErrMsg}). ${wait}ms 후 재시도 (${attempt + 1}/${GEMINI_MAX_RETRIES})`);
       await sleep(wait);
       continue;
     }
-    throw new Error(`Gemini API ${response.status}: ${lastErrMsg}`);
+    throw new Error(`Vertex Gemini API ${response.status}: ${lastErrMsg}`);
   }
   // 도달 불가 — 안전망
-  throw new Error(`Gemini API ${lastErrStatus}: ${lastErrMsg}`);
+  throw new Error(`Vertex Gemini API ${lastErrStatus}: ${lastErrMsg}`);
 }
 
 // Gemini 응답에서 functionCall 블록 추출. tool_choice ANY + allowedFunctionNames로 강제했으므로
@@ -976,7 +1019,7 @@ function enforceMechanicalRules(text) {
 // Tier 2: 3개 이상 콤마 나열을 그 문장만 LLM 외과수술로 해체.
 // 위반 문장 1개당 micro-call (~150 토큰), 다른 문장은 손대지 않음.
 async function fixListsOfThree(text, lang) {
-  if (!text || !GEMINI_API_KEY) return text;
+  if (!text || !VERTEX_PROJECT_ID) return text;
 
   // verifyCheckFields와 동일 기준으로 문장 분리
   const sentences = text.split(/(?<=[.!?？。])\s+|\n+/).map(s => s.trim()).filter(Boolean);
@@ -1020,16 +1063,25 @@ Sentence: ${sentence}`
 
 문장: ${sentence}`;
 
-  // Gemini 텍스트 생성 (tool 없이) — 외과수술용 micro-call.
-  const url = `${GEMINI_API_BASE}/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 512 }
-    })
-  });
+  // Vertex Gemini 텍스트 생성 (tool 없이) — 외과수술용 micro-call. 실패는 best-effort 폴백.
+  let response;
+  try {
+    const url = getVertexEndpoint();
+    const accessToken = await getVertexAccessToken();
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`
+      },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 512 }
+      })
+    });
+  } catch {
+    return null;
+  }
   if (!response.ok) return null;
   const data = await response.json();
   const candidate = data?.candidates?.[0];
