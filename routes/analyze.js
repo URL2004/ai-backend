@@ -412,6 +412,17 @@ async function callGemini({ userText, systemText, tool, temperature, maxOutputTo
     }
   };
   if (typeof temperature === 'number') body.generationConfig.temperature = temperature;
+
+  // Gemini 2.5/3.x는 응답 전에 thinking 토큰을 maxOutputTokens 예산에서 같이 차감.
+  // 휴머나이저는 다중 제약 검증이 필요해 적절한 thinking이 품질에 도움 → 8162로 캡해 비용/잘림 둘 다 방지.
+  // 환경변수 GEMINI_THINKING_BUDGET 설정 시 그 값으로 오버라이드.
+  const thinkingBudgetEnv = process.env.GEMINI_THINKING_BUDGET;
+  const thinkingBudget = (thinkingBudgetEnv !== undefined && thinkingBudgetEnv !== '')
+    ? parseInt(thinkingBudgetEnv, 10)
+    : 8162;
+  if (Number.isFinite(thinkingBudget) && thinkingBudget >= 0) {
+    body.generationConfig.thinkingConfig = { thinkingBudget };
+  }
   if (systemText) {
     body.systemInstruction = { parts: [{ text: systemText }] };
   }
@@ -1076,7 +1087,12 @@ Sentence: ${sentence}`
       },
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 512 }
+        // 단순 한 문장 재작성이라 thinking은 최소(128)로 캡 — 안 그러면 dynamic thinking이 512 budget을 다 먹어 출력 잘림.
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 512,
+          thinkingConfig: { thinkingBudget: 128 }
+        }
       })
     });
   } catch {
