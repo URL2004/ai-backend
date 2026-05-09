@@ -12,6 +12,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-6';
+const WEB_SEARCH_MODEL = 'claude-haiku-4-5';
 const ANTHROPIC_API_BASE = 'https://api.anthropic.com/v1';
 
 // 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
@@ -920,7 +921,7 @@ async function fetchWebSearchExamples(text, lang) {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: WEB_SEARCH_MODEL,
         max_tokens: 2048,
         messages: [{ role: 'user', content: searchPrompt }],
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]
@@ -1002,9 +1003,9 @@ router.post('/analyze', async (req, res) => {
       }
       usage = data.usage;
     } else {
-      // 웹 검색: 프런트에서 useWebSearch=true로 켰을 때만 실행 (기본 OFF).
+      // 웹 검색: 기본 ON, 프런트에서 useWebSearch=false로 명시했을 때만 OFF.
       // 실패/빈 응답이면 examples=null로 자연 폴백.
-      const useWebSearch = req.body.useWebSearch === true;
+      const useWebSearch = req.body.useWebSearch !== false;
       const examples = useWebSearch ? await fetchWebSearchExamples(text, lang) : null;
 
       // ★ 휴머나이저: 고정 시스템 프롬프트는 cache_control: ephemeral로 캐싱, 유저 텍스트만 별도
