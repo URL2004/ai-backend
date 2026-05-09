@@ -718,6 +718,131 @@ function cleanText(text) {
     .trim();
 }
 
+// ============================================================
+// Pass C — mechanical 위반 결정론적 후처리
+// 프롬프트 generative 룰의 잔여 surface 위반을 0건 보장.
+// 의미 의존 룰(종결어미/문단 비율/hedge 등)은 손대지 않음 — 2-pass 영역.
+// ============================================================
+
+// Tier 1 surface 패턴 swap (LLM 호출 X, regex/lookup만)
+// 출력 로그 보면서 자주 보이는 신종 GPT-ism을 늘려가는 자산
+const MECHANICAL_LEXICON = [
+  // 무생물 도입 (룰: 능동 종결 + 무생물 주어 회피 — backup)
+  { from: /본\s*보고서에서는\s*/g, to: '' },
+  { from: /본\s*보고서는/g, to: '이 글은' },
+  { from: /본\s*글에서는\s*/g, to: '' },
+  // GPT-ism 종결 정형구 (룰: 어휘 다양화 — backup)
+  { from: /시사하는\s*바가\s*(크다|큽니다)/g, to: '의미가 큽니다' },
+  { from: /결론적으로/g, to: '정리하면' },
+  // GPT-ism 형용사 (어미 변형 안전한 형태만)
+  { from: /유의미한/g, to: '의미 있는' },
+  { from: /다각적/g, to: '여러 면의' },
+  { from: /혁신적/g, to: '새로운' },
+  { from: /뜻깊은/g, to: '의미 있는' },
+  { from: /소중한/g, to: '중요한' }
+];
+
+function enforceMechanicalRules(text) {
+  if (!text) return text;
+  let out = text;
+
+  // 1) 특수문자 (룰 1 — 프롬프트에서 제거됨, 여기서 100% 강제)
+  out = out.replace(/·/g, ', ');                                     // 중점 → 콤마 (3+개면 Tier 2가 다시 처리)
+  out = out.replace(/([가-힣])\s+[-—–]\s+([가-힣])/g, '$1 $2');      // 줄표 (공백 사이) → 공백
+  // *, #, `, ~ 는 cleanText에서 이미 제거
+
+  // 2) GPT-ism + 무생물 도입 swap (generative 룰의 backup)
+  for (const { from, to } of MECHANICAL_LEXICON) {
+    out = out.replace(from, to);
+  }
+
+  // 정리: 중복 공백, 마침표 앞 공백
+  out = out.replace(/ {2,}/g, ' ').replace(/\s+([.,!?])/g, '$1').trim();
+  return out;
+}
+
+// Tier 2: 3개 이상 콤마 나열을 그 문장만 LLM 외과수술로 해체.
+// 위반 문장 1개당 micro-call (~150 토큰), 다른 문장은 손대지 않음.
+async function fixListsOfThree(text, lang) {
+  if (!text || !ANTHROPIC_API_KEY) return text;
+
+  // verifyCheckFields와 동일 기준으로 문장 분리
+  const sentences = text.split(/(?<=[.!?？。])\s+|\n+/).map(s => s.trim()).filter(Boolean);
+  if (sentences.length === 0) return text;
+
+  // 3+ 콤마 나열 패턴 (한/영/숫자 모두)
+  const listRe = /[가-힣A-Za-z0-9]+(?:\s*,\s*[가-힣A-Za-z0-9]+){2,}/;
+
+  const violatingIdx = [];
+  sentences.forEach((s, i) => { if (listRe.test(s)) violatingIdx.push(i); });
+  if (violatingIdx.length === 0) return text;
+
+  const fixed = [...sentences];
+  for (const i of violatingIdx) {
+    try {
+      const rewritten = await rewriteListSentence(sentences[i], lang);
+      // 길이 sanity: 너무 짧으면 원문 유지 (자연 폴백)
+      if (rewritten && rewritten.length >= sentences[i].length * 0.5) {
+        fixed[i] = rewritten;
+      }
+    } catch (e) {
+      // micro-call 실패 → 원문 그대로 (Pass C는 best-effort)
+    }
+  }
+  return fixed.join(' ');
+}
+
+async function rewriteListSentence(sentence, lang) {
+  const prompt = lang === 'en'
+    ? `Rewrite the following sentence to break the 3+ comma-separated list into either a "from A through C" range expression OR 2-3 short separate sentences.
+- Do NOT change vocabulary, structure, ending style, or spelling outside the list portion.
+- Preserve the original tone exactly.
+- Output ONLY the rewritten sentence — no quotes, no commentary, no line breaks.
+
+Sentence: ${sentence}`
+    : `다음 문장에서 콤마로 묶인 3개 이상 나열만 해체하라.
+- 나열을 "A부터 C까지" 같은 구간 표현 또는 짧은 별도 문장 2~3개로 분할
+- 다른 어휘·구조·종결어미·맞춤법은 절대 변경 금지
+- 원문 어조 그대로 유지
+- 출력은 수정된 문장만. 따옴표·해설·줄바꿈 금지
+
+문장: ${sentence}`;
+
+  const response = await fetch(`${ANTHROPIC_API_BASE}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 512,
+      temperature: 0.3,
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+  if (!response.ok) return null;
+  const data = await response.json();
+  const blocks = Array.isArray(data?.content) ? data.content : [];
+  let out = '';
+  for (const b of blocks) {
+    if (b && b.type === 'text' && typeof b.text === 'string') out += b.text;
+  }
+  out = out.trim();
+  return out || null;
+}
+
+// 휴머나이저 출력에 cleanText + Tier 1 + Tier 2를 일괄 적용.
+// 1차 출력과 2-pass 출력 각각에 호출 → mechanical 위반 잔여 0건 보장.
+async function applyPassC(result, lang) {
+  if (!result?.outputText) return;
+  let t = cleanText(result.outputText);
+  t = enforceMechanicalRules(t);
+  t = await fixListsOfThree(t, lang);
+  result.outputText = t;
+}
+
 // ─── Anthropic Messages API 호출 ─────────────────────────────
 // 시스템 프롬프트는 cache_control: ephemeral로 5분 TTL 자동 캐싱 (1024+ 토큰 필요).
 // 구조화 출력은 tool + tool_choice 강제 호출로 처리.
@@ -903,6 +1028,9 @@ router.post('/analyze', async (req, res) => {
         maxOutputTokens: 16384
       });
       result = extractClaudeResult(data, humanizeTool.name);
+      // Pass C: cleanText + 결정론적 mechanical 후처리 (특수문자, GPT-ism, 3+ 나열).
+      // verifyCheckFields가 후처리된 텍스트를 보게 해서 2-pass가 mechanical 위반으론 발동하지 않게 함.
+      await applyPassC(result, lang);
       verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
 
       // ★ 2-pass 폴백: critical 위반 1건 또는 minor 2건+일 때만 재호출 (비용 절약)
@@ -919,6 +1047,7 @@ router.post('/analyze', async (req, res) => {
           maxOutputTokens: 16384
         });
         result = extractClaudeResult(refineData, humanizeTool.name);
+        await applyPassC(result, lang);
         verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
         refineUsage = refineData.usage;
         if (result.selfCheckPass === false) {
@@ -926,7 +1055,6 @@ router.post('/analyze', async (req, res) => {
         }
       }
 
-      if (result.outputText) result.outputText = cleanText(result.outputText);
       if (!result.outputText) throw new Error('humanize_incomplete');
       usage = data.usage;
     }
@@ -1014,7 +1142,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
         throw new Error('detect_incomplete');
       }
     } else {
-      if (result.outputText) result.outputText = cleanText(result.outputText);
+      await applyPassC(result, lang);
       if (!result.outputText) throw new Error('humanize_incomplete');
     }
     usage = data.usage;
