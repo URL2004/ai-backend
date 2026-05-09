@@ -877,8 +877,10 @@ router.post('/analyze', async (req, res) => {
       }
       usage = data.usage;
     } else {
-      // 웹 검색은 휴머나이저에서 항상 실행. 실패/빈 응답이면 examples=null로 자연 폴백.
-      const examples = await fetchWebSearchExamples(text, lang);
+      // 웹 검색: 프런트에서 useWebSearch=true로 켰을 때만 실행 (기본 OFF).
+      // 실패/빈 응답이면 examples=null로 자연 폴백.
+      const useWebSearch = req.body.useWebSearch === true;
+      const examples = useWebSearch ? await fetchWebSearchExamples(text, lang) : null;
 
       // ★ 휴머나이저: 고정 시스템 프롬프트는 cache_control: ephemeral로 캐싱, 유저 텍스트만 별도
       const selectedMode = req.body.humanizeMode || 'assignment';
