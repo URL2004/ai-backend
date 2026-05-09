@@ -874,7 +874,11 @@ async function callClaude({ userText, systemText, tool, temperature, maxOutputTo
 
   if (tool) {
     body.tools = [tool];
-    body.tool_choice = { type: 'tool', name: tool.name };
+    // Anthropic 제약: thinking 활성화 시 forced tool_choice 사용 불가 (auto/none만 허용).
+    // thinking ON일 땐 'auto'로 두고, 시스템 프롬프트 + 단일 tool 제공으로 호출 유도.
+    body.tool_choice = body.thinking
+      ? { type: 'auto' }
+      : { type: 'tool', name: tool.name };
   }
 
   const response = await fetch(`${ANTHROPIC_API_BASE}/messages`, {
