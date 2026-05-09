@@ -852,9 +852,17 @@ async function callClaude({ userText, systemText, tool, temperature, maxOutputTo
     throw new Error('ANTHROPIC_API_KEY is not configured');
   }
 
+  let resolvedMaxTokens = typeof maxOutputTokens === 'number' ? maxOutputTokens : 8192;
+  // Extended thinking 활성화 시: max_tokens는 thinking + 텍스트 + tool_use 합산 천장이라
+  // 자동으로 충분히 확장 (thinking budget + 실제 출력 여유 16K 추가).
+  if (typeof thinkingBudget === 'number' && thinkingBudget >= 1024) {
+    const required = thinkingBudget + 16384;
+    if (resolvedMaxTokens < required) resolvedMaxTokens = required;
+  }
+
   const body = {
     model: MODEL,
-    max_tokens: typeof maxOutputTokens === 'number' ? maxOutputTokens : 8192,
+    max_tokens: resolvedMaxTokens,
     messages: [{ role: 'user', content: userText }]
   };
   // Extended thinking 활성화 시 temperature는 Anthropic이 1로 강제 → 별도 지정 안 함.
