@@ -1,5 +1,5 @@
-// [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리 + Claude API 호출 유틸
-// ★ 캐싱 최적화: 고정 프롬프트를 system에 넣어 cache_control 적용
+// [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리 + OpenAI Chat Completions 호출 유틸
+// ★ Prompt caching: 시스템 프롬프트가 1024+ 토큰일 때 OpenAI가 자동 적용 (별도 API 호출 불필요)
 
 const express = require('express');
 const multer = require('multer');
@@ -10,8 +10,9 @@ const { admin, db } = require('../config');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-const API_KEY = process.env.ANTHROPIC_API_KEY;
-const MODEL = 'claude-sonnet-4-6';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const MODEL = 'gpt-5.4';
+const OPENAI_API_BASE = 'https://api.openai.com/v1';
 
 // 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
 async function precheckCredits(idToken, needed) {
@@ -131,8 +132,9 @@ function authErrorMessage(code) {
   })[code] || '인증/결제 확인에 실패했습니다.';
 }
 
-// ★ 구조화 출력용 tool 정의 (JSON.parse 대신 tool_use로 안전하게 객체 수신)
+// ★ 구조화 출력용 schema 정의 (OpenAI strict json_schema 변환용 베이스)
 // ★ mode별 스키마 분기: assignment만 의문문/접속사/P3/문단비율 필드 강제
+// 함수명에 "Tool"이 남아 있는 건 기존 구조 유지용 — 실제로는 OpenAI strict json_schema로 변환됨
 function buildHumanizeTool(mode) {
   const baseProperties = {
     outputText: { type: 'string', description: '변환된 글 전체' },
@@ -250,10 +252,74 @@ const DETECT_TOOL = {
   }
 };
 
-function extractToolResult(data, toolName) {
-  const toolUse = data.content && data.content.find(c => c.type === 'tool_use' && c.name === toolName);
-  if (!toolUse) throw new Error('모델이 구조화 응답을 반환하지 않았습니다.');
-  return toolUse.input;
+// OpenAI Chat Completions 응답에서 결과 객체 추출
+function extractGeminiResult(data) {
+  const choice = data?.choices?.[0];
+  if (!choice) throw new Error('모델이 응답을 반환하지 않았습니다.');
+  const msg = choice.message || {};
+  if (msg.refusal) {
+    throw new Error(`안전 필터에 의해 응답이 거부되었습니다: ${msg.refusal}`);
+  }
+  if (choice.finish_reason === 'content_filter') {
+    throw new Error('안전 필터에 의해 응답이 차단되었습니다.');
+  }
+  if (typeof msg.content !== 'string' || !msg.content.trim()) {
+    throw new Error('모델이 구조화 응답을 반환하지 않았습니다.');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(msg.content);
+  } catch (e) {
+    throw new Error('모델 응답 JSON 파싱 실패');
+  }
+  // topNounCounts가 string으로 왔으면 객체로 정규화 (strict mode에선 string으로 평탄화됨)
+  if (parsed && typeof parsed.topNounCounts === 'string') {
+    try { parsed.topNounCounts = JSON.parse(parsed.topNounCounts); }
+    catch { parsed.topNounCounts = {}; }
+  }
+  if (parsed && parsed.topNounCounts && typeof parsed.topNounCounts !== 'object') {
+    parsed.topNounCounts = {};
+  }
+  return parsed;
+}
+
+// JSON Schema → OpenAI strict json_schema 변환 어댑터
+// - 동적 키 object(additionalProperties로 type 지정)는 strict 미지원 → string으로 평탄화
+// - 모든 object 노드에 additionalProperties: false 강제
+// - 모든 properties는 required에 포함되도록 보강
+function toOpenAIStrictSchema(jsonSchema) {
+  const clone = JSON.parse(JSON.stringify(jsonSchema));
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    // 동적 키 object → JSON 문자열 타입으로 평탄화
+    if (node.type === 'object' && node.additionalProperties && typeof node.additionalProperties === 'object') {
+      const oldDesc = node.description || '';
+      delete node.properties;
+      delete node.required;
+      delete node.additionalProperties;
+      node.type = 'string';
+      node.description = oldDesc + ' (JSON object 문자열로 작성. 예: {"키":값,"키":값})';
+      return;
+    }
+    if (node.type === 'object') {
+      node.additionalProperties = false;
+      if (node.properties) {
+        // strict 모드는 모든 properties가 required여야 함
+        node.required = Object.keys(node.properties);
+        for (const k of Object.keys(node.properties)) walk(node.properties[k]);
+      }
+    }
+    if (node.items) walk(node.items);
+  }
+  walk(clone);
+  return clone;
+}
+
+function buildDetectResponseSchema() {
+  return toOpenAIStrictSchema(DETECT_TOOL.input_schema);
+}
+function buildHumanizeResponseSchema(mode) {
+  return toOpenAIStrictSchema(buildHumanizeTool(mode).input_schema);
 }
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
@@ -680,52 +746,108 @@ function cleanText(text) {
     .trim();
 }
 
-async function callClaude(messages, tools, temperature, system, options = {}) {
-  const body = {
-    model: options.model || MODEL,
-    max_tokens: options.maxTokens || 8192,
-    messages: messages
-  };
-
-  if (tools) body.tools = tools;
-  if (options.toolChoice) body.tool_choice = options.toolChoice;
-  if (temperature !== undefined) body.temperature = temperature;
-
-  // ★ 시스템 프롬프트에 cache_control 적용 (고정 프롬프트가 캐싱됨)
-  if (system) {
-    body.system = [
-      {
-        type: "text",
-        text: system,
-        cache_control: { type: "ephemeral" }
-      }
-    ];
+// ─── OpenAI Chat Completions API 호출 ─────────────────────────────
+// systemText는 항상 messages에 직접 전달. OpenAI는 1024+ 토큰 동일 prefix가 자동 prompt caching 적용 (별도 API 불필요).
+// 함수명은 호출부 호환을 위해 callGemini로 유지.
+async function callGemini({ userText, systemText, responseSchema, maxOutputTokens, responseMimeType }) {
+  if (!OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not configured');
   }
+  const messages = [];
+  if (systemText) messages.push({ role: 'system', content: systemText });
+  messages.push({ role: 'user', content: userText });
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const body = {
+    model: MODEL,
+    messages
+  };
+  // GPT-5 reasoning 계열은 temperature default(1)만 허용 → 호출부 인자는 무시
+  if (typeof maxOutputTokens === 'number') body.max_completion_tokens = maxOutputTokens;
+
+  // structured output: strict json_schema (responseMimeType이 명시적으로 null인 경우만 비활성)
+  const wantsJson = responseMimeType !== null;
+  if (wantsJson && responseSchema) {
+    body.response_format = {
+      type: 'json_schema',
+      json_schema: { name: 'result', schema: responseSchema, strict: true }
+    };
+  }
+  // GPT-5.4 reasoning: medium이 Gemini thinking 4000과 비슷한 수준
+  body.reasoning_effort = 'medium';
+
+  const url = `${OPENAI_API_BASE}/chat/completions`;
+  const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'prompt-caching-2024-07-31'
+      'Authorization': `Bearer ${OPENAI_API_KEY}`
     },
     body: JSON.stringify(body)
   });
-
   const data = await response.json();
 
+  if (!response.ok) {
+    const msg = data?.error?.message || response.statusText;
+    throw new Error(`OpenAI API ${response.status}: ${msg}`);
+  }
+
   if (data.usage) {
+    const u = data.usage;
+    const cached = u.prompt_tokens_details?.cached_tokens || 0;
+    const reasoning = u.completion_tokens_details?.reasoning_tokens || 0;
     console.log("-----------------------------------------");
-    console.log(`📊 비용 리포트: 캐시읽기(90%할인) ${data.usage.cache_read_input_tokens || 0} / 캐시생성(25%추가) ${data.usage.cache_creation_input_tokens || 0} / 일반입력 ${data.usage.input_tokens || 0}`);
+    console.log(`📊 비용 리포트: 입력 ${u.prompt_tokens || 0} (캐시 ${cached}) / 출력 ${u.completion_tokens || 0} (reasoning ${reasoning}) / 총 ${u.total_tokens || 0}`);
     console.log("-----------------------------------------");
   }
 
-  if (data.stop_reason === 'max_tokens') {
+  const finish = data?.choices?.[0]?.finish_reason;
+  if (finish === 'length') {
     console.log('⚠️ 응답이 max_tokens 제한으로 잘림');
   }
 
   return data;
+}
+
+// 웹 검색: OpenAI Responses API의 web_search_preview 도구 사용.
+// 실패/빈 응답이면 null 반환 → 호출 측은 기존 휴머나이즈 흐름과 동일하게 진행.
+async function fetchWebSearchExamples(text, lang) {
+  if (!OPENAI_API_KEY) return null;
+  try {
+    const searchPrompt = lang === 'en'
+      ? `Identify the topic of the following text and briefly provide 2-3 specific real-world examples or statistics related to it. Text: ${text.substring(0, 500)}`
+      : `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}`;
+
+    const response = await fetch(`${OPENAI_API_BASE}/responses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        input: searchPrompt,
+        tools: [{ type: 'web_search_preview' }]
+      })
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+
+    let outputText = '';
+    if (Array.isArray(data?.output)) {
+      for (const item of data.output) {
+        if (item.type === 'message' && Array.isArray(item.content)) {
+          for (const c of item.content) {
+            if ((c.type === 'output_text' || c.type === 'text') && c.text) outputText += c.text;
+          }
+        }
+      }
+    }
+    if (!outputText && typeof data?.output_text === 'string') outputText = data.output_text;
+    if (outputText.length < 50) return null;
+    return outputText.substring(0, 800);
+  } catch (e) {
+    return null;
+  }
 }
 
 // --- 라우트 ---
@@ -764,7 +886,7 @@ router.post('/analyze', async (req, res) => {
     });
   }
 
-  // 2) Claude 호출 + 결과 검증 (실패 시 차감 없음)
+  // 2) LLM 호출 + 결과 검증 (실패 시 차감 없음)
   let result;
   let usage;
   let refineUsage = null;
@@ -773,38 +895,26 @@ router.post('/analyze', async (req, res) => {
       const detectUserContent = prevContext
         ? `[앞 청크의 마지막 일부 — 문맥 참고용, 이 부분은 점수에 포함하지 말 것]\n${prevContext}\n\n[분석할 글]\n${text}`
         : `[분석할 글]\n${text}`;
-      const data = await callClaude(
-        [{ role: 'user', content: detectUserContent }],
-        [DETECT_TOOL], undefined,
-        getDetectSystem(lang),
-        { model: MODEL, maxTokens: 10000, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
-      );
-      result = extractToolResult(data, DETECT_TOOL.name);
+      const detectSystem = getDetectSystem(lang);
+      const data = await callGemini({
+        userText: detectUserContent,
+        systemText: detectSystem,
+        responseSchema: buildDetectResponseSchema(),
+        maxOutputTokens: 10000
+      });
+      result = extractGeminiResult(data);
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
         throw new Error('detect_incomplete');
       }
       usage = data.usage;
     } else {
-      // 웹 검색 (유저가 활성화한 경우에만 실행)
-      let examples = null;
-      if (req.body.webSearch) {
-        try {
-          const searchPrompt = lang === 'en'
-            ? `Identify the topic of the following text and briefly provide 2-3 specific real-world examples or statistics related to it. Text: ${text.substring(0, 500)}`
-            : `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}`;
-          const searchData = await callClaude(
-            [{ role: 'user', content: searchPrompt }],
-            [{ type: 'web_search_20250305', name: 'web_search' }]
-          );
-          const textContent = searchData.content.filter(c => c.type === 'text').map(c => c.text).join('');
-          if (textContent.length > 50) examples = textContent.substring(0, 800);
-        } catch(e) {}
-      }
+      // 웹 검색은 휴머나이저에서 항상 실행. 실패/빈 응답이면 examples=null로 자연 폴백.
+      const examples = await fetchWebSearchExamples(text, lang);
 
-      // ★ 휴머나이저: 고정 프롬프트는 system(캐싱), 유저 텍스트만 user 메시지
+      // ★ 휴머나이저: 고정 시스템 프롬프트는 OpenAI 자동 prompt caching에 의존, 유저 텍스트만 별도
       const selectedMode = req.body.humanizeMode || 'assignment';
       const humanizeSystem = getHumanizeSystem(selectedMode, lang);
-      const humanizeTool = buildHumanizeTool(selectedMode);
+      const humanizeSchema = buildHumanizeResponseSchema(selectedMode);
       const prevContextBlock = prevContext
         ? `[앞 청크의 마지막 일부 — 문체 연속성 참고용, 다시 변환하지 말 것]\n${prevContext}\n\n`
         : '';
@@ -814,13 +924,14 @@ router.post('/analyze', async (req, res) => {
       const inputParaCount = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
       const inputCharLen = text.replace(/\s+/g, '').length;
 
-      const data = await callClaude(
-        [{ role: 'user', content: userContent }],
-        [humanizeTool], 0.9,
-        humanizeSystem,
-        { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
-      );
-      result = extractToolResult(data, humanizeTool.name);
+      const data = await callGemini({
+        userText: userContent,
+        systemText: humanizeSystem,
+        responseSchema: humanizeSchema,
+        temperature: 0.5,
+        maxOutputTokens: 16384
+      });
+      result = extractGeminiResult(data);
       verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
 
       // ★ 2-pass 폴백: critical 위반 1건 또는 minor 2건+일 때만 재호출 (비용 절약)
@@ -829,13 +940,14 @@ router.post('/analyze', async (req, res) => {
         const failed = collectFailedFields(result, selectedMode);
         console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
         const refineUser = `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${text}\n\n[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형을 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
-        const refineData = await callClaude(
-          [{ role: 'user', content: refineUser }],
-          [humanizeTool], 0.9,
-          humanizeSystem,
-          { maxTokens: 16384, toolChoice: { type: 'tool', name: humanizeTool.name } }
-        );
-        result = extractToolResult(refineData, humanizeTool.name);
+        const refineData = await callGemini({
+          userText: refineUser,
+          systemText: humanizeSystem,
+          responseSchema: humanizeSchema,
+          temperature: 0.5,
+          maxOutputTokens: 16384
+        });
+        result = extractGeminiResult(refineData);
         verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
         refineUsage = refineData.usage;
         if (result.selfCheckPass === false) {
@@ -909,7 +1021,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     });
   }
 
-  // 2) Claude 호출 + 결과 검증 (실패 시 차감 없음)
+  // 2) LLM 호출 + 결과 검증 (실패 시 차감 없음)
   let result;
   let usage;
   try {
@@ -917,17 +1029,17 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     const humanizeModePdf = req.body.humanizeMode || 'assignment';
     const systemPrompt = mode === 'detect' ? getDetectSystem(lang) : getHumanizeSystem(humanizeModePdf, lang);
     const userContent = mode === 'detect' ? `[분석할 글]\n${text}` : `[재작성할 텍스트]\n${text}`;
-    const activeTool = mode === 'detect' ? DETECT_TOOL : buildHumanizeTool(humanizeModePdf);
-    const pdfOptions = mode === 'detect'
-      ? { model: MODEL, maxTokens: 10000, toolChoice: { type: 'tool', name: DETECT_TOOL.name } }
-      : { maxTokens: 16384, toolChoice: { type: 'tool', name: activeTool.name } };
-    const data = await callClaude(
-      [{ role: 'user', content: userContent }],
-      [activeTool], undefined,
-      systemPrompt,
-      pdfOptions
-    );
-    result = extractToolResult(data, activeTool.name);
+    const responseSchema = mode === 'detect'
+      ? buildDetectResponseSchema()
+      : buildHumanizeResponseSchema(humanizeModePdf);
+    const data = await callGemini({
+      userText: userContent,
+      systemText: systemPrompt,
+      responseSchema,
+      temperature: mode === 'detect' ? undefined : 0.5,
+      maxOutputTokens: mode === 'detect' ? 10000 : 16384
+    });
+    result = extractGeminiResult(data);
     if (mode === 'detect') {
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
         throw new Error('detect_incomplete');
