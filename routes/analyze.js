@@ -843,33 +843,36 @@ function enforceMechanicalRules(text) {
 
 // Tier 2: 3개 이상 콤마 나열을 그 문장만 LLM 외과수술로 해체.
 // 위반 문장 1개당 micro-call (~150 토큰), 다른 문장은 손대지 않음.
+// ★ \n\n 단락 경계 보존: sentences를 join하지 않고 원본 text 위에서 surgical replace.
 async function fixListsOfThree(text, lang) {
   if (!text || !ANTHROPIC_API_KEY) return text;
 
-  // verifyCheckFields와 동일 기준으로 문장 분리
+  // verifyCheckFields와 동일 기준으로 문장 분리(매칭 검출용)
   const sentences = text.split(/(?<=[.!?？。])\s+|\n+/).map(s => s.trim()).filter(Boolean);
   if (sentences.length === 0) return text;
 
   // 3+ 콤마 나열 패턴 (한/영/숫자 모두)
   const listRe = /[가-힣A-Za-z0-9]+(?:\s*,\s*[가-힣A-Za-z0-9]+){2,}/;
 
-  const violatingIdx = [];
-  sentences.forEach((s, i) => { if (listRe.test(s)) violatingIdx.push(i); });
-  if (violatingIdx.length === 0) return text;
+  const violating = sentences.filter(s => listRe.test(s));
+  if (violating.length === 0) return text;
 
-  const fixed = [...sentences];
-  for (const i of violatingIdx) {
+  // 원본 text 위에서 violating 문장만 in-place 교체 → \n\n·공백 그대로 유지
+  let fixed = text;
+  let cursor = 0;
+  for (const original of violating) {
     try {
-      const rewritten = await rewriteListSentence(sentences[i], lang);
-      // 길이 sanity: 너무 짧으면 원문 유지 (자연 폴백)
-      if (rewritten && rewritten.length >= sentences[i].length * 0.5) {
-        fixed[i] = rewritten;
-      }
+      const rewritten = await rewriteListSentence(original, lang);
+      if (!rewritten || rewritten.length < original.length * 0.5) continue;
+      const idx = fixed.indexOf(original, cursor);
+      if (idx < 0) continue;  // 같은 문장 중복 시 이미 교체된 위치 스킵
+      fixed = fixed.substring(0, idx) + rewritten + fixed.substring(idx + original.length);
+      cursor = idx + rewritten.length;
     } catch (e) {
       // micro-call 실패 → 원문 그대로 (Pass C는 best-effort)
     }
   }
-  return fixed.join(' ');
+  return fixed;
 }
 
 async function rewriteListSentence(sentence, lang) {
