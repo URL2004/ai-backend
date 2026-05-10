@@ -884,7 +884,11 @@ async function callClaude({ userText, systemText, tool, temperature, maxOutputTo
 
   if (tool) {
     body.tools = [tool];
-    body.tool_choice = { type: 'tool', name: tool.name };
+    // extended thinking은 forced tool_choice('tool'/'any')와 호환 X → thinking 켜진 경우 auto로 폴백.
+    // 휴머나이즈 시스템 프롬프트가 구조화 출력을 강제하므로 auto에서도 모델이 tool을 호출함.
+    body.tool_choice = (typeof thinkingBudget === 'number' && thinkingBudget > 0)
+      ? { type: 'auto' }
+      : { type: 'tool', name: tool.name };
   }
 
   const response = await fetch(`${ANTHROPIC_API_BASE}/messages`, {
