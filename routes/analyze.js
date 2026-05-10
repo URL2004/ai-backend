@@ -855,7 +855,7 @@ async function applyPassC(result, lang) {
 // ─── Anthropic Messages API 호출 ─────────────────────────────
 // 시스템 프롬프트는 cache_control: ephemeral로 5분 TTL 자동 캐싱 (1024+ 토큰 필요).
 // 구조화 출력은 tool + tool_choice 강제 호출로 처리.
-async function callClaude({ userText, systemText, tool, temperature, maxOutputTokens }) {
+async function callClaude({ userText, systemText, tool, temperature, maxOutputTokens, thinkingBudget }) {
   if (!ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is not configured');
   }
@@ -865,7 +865,14 @@ async function callClaude({ userText, systemText, tool, temperature, maxOutputTo
     max_tokens: typeof maxOutputTokens === 'number' ? maxOutputTokens : 8192,
     messages: [{ role: 'user', content: userText }]
   };
-  if (typeof temperature === 'number') body.temperature = temperature;
+
+  // extended thinking enabled: temperature는 1.0 강제(API 제약), thinking 토큰은 max_tokens에서 차감.
+  if (typeof thinkingBudget === 'number' && thinkingBudget > 0) {
+    body.thinking = { type: 'enabled', budget_tokens: thinkingBudget };
+    body.temperature = 1;
+  } else if (typeof temperature === 'number') {
+    body.temperature = temperature;
+  }
 
   if (systemText) {
     body.system = [{
@@ -1034,7 +1041,8 @@ router.post('/analyze', async (req, res) => {
         systemText: humanizeSystem,
         tool: humanizeTool,
         temperature: 0.5,
-        maxOutputTokens: 16384
+        maxOutputTokens: 22384,
+        thinkingBudget: 6000
       });
       result = extractClaudeResult(data, humanizeTool.name);
       // Pass C: cleanText + 결정론적 mechanical 후처리 (특수문자, GPT-ism, 3+ 나열).
@@ -1157,7 +1165,8 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
         systemText: humanizeSystem,
         tool: humanizeTool,
         temperature: 0.5,
-        maxOutputTokens: 16384
+        maxOutputTokens: 22384,
+        thinkingBudget: 6000
       });
       result = extractClaudeResult(data, humanizeTool.name);
       await applyPassC(result, lang);
