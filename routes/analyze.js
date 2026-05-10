@@ -552,7 +552,8 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
     }
 
     // ===== 규칙 5: hedgeRatio 양방향 실측 (상하한 0.10~0.15 때문에 절대값 오차로 교정) =====
-    const hedgeRe = /(인 것 같|라고 생각|던 것 같|았던 것 같|았을지도|일지도 모|일 수도 있|인 듯)/;
+    // 통과 글 분석으로 풀 확장: 받침 차이 흡수 위해 어간 부분만 매칭("고 생각", "지도 모")
+    const hedgeRe = /(인 것 같|는 것 같|고 생각|던 것 같|았던 것 같|았을지도|지도 모|일 수도 있|인 듯|지 않을까)/;
     const hedgeCount = sentences.filter(s => hedgeRe.test(s)).length;
     const actualHedge = sentences.length > 0 ? hedgeCount / sentences.length : 0;
     if (Math.abs(actualHedge - (result.hedgeRatio || 0)) > 0.03) {
@@ -644,7 +645,6 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
     violations = violations
       || (typeof result.conjunctionStartRatio === 'number' && result.conjunctionStartRatio > 0.15)
       || result.lastSentenceIsReassurance === true
-      || (result.questionSentenceCount || 0) === 0
       || (typeof result.paragraphLengthRatio === 'number'
           && result.paragraphLengthRatio >= 0
           && result.paragraphLengthRatio < 2)
@@ -701,6 +701,8 @@ function shouldRefine(result, mode) {
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
     if (typeof result.topicFocusRatio === 'number' && result.topicFocusRatio >= 0 && result.topicFocusRatio < 0.4) minor++;
+    if ((result.evidenceCount || 0) >= 4) minor++;
+    if ((result.questionSentenceCount || 0) === 0) minor++;
   }
   return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
 }
@@ -775,6 +777,9 @@ function collectFailedFields(r, mode) {
     }
     if (typeof r.topicFocusRatio === 'number' && r.topicFocusRatio >= 0 && r.topicFocusRatio < 0.5) {
       failed.push(`다항목 주제를 균등 분배(최대 비중 ${(r.topicFocusRatio * 100).toFixed(0)}%, 룰 12, 목표 50%+) — 1~2개 항목만 깊이 풀고 나머지는 1문장 이하로 압축하거나 생략. 모든 항목을 같은 패턴(정의→사례→평가)으로 풀지 마라.`);
+    }
+    if ((r.evidenceCount || 0) >= 4) {
+      failed.push(`전체 사례 인용 ${r.evidenceCount}건(룰 11 보강, 권장 0~2건) — 통과 글들은 사례를 거의 안 쓴다. 연도·기업명·통계 인용을 추상 진술과 글쓴이 판단으로 갈아끼우고, 꼭 필요한 한두 개만 남겨라.`);
     }
   }
   return failed;
