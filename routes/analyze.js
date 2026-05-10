@@ -220,12 +220,30 @@ function buildHumanizeTool(mode) {
       description: '맞춤법/띄어쓰기 블랙리스트 적중 목록. 빈 배열이어야 통과 (P0). 서버 실측으로 덮어씀.',
       items: { type: 'string' }
     };
+    baseProperties.evidenceCount = {
+      type: 'integer',
+      description: '사례·인용 문장 수. "[연도(YYYY)+주체+수치/기업명]" 형태로 객관 사실을 인용한 문장 개수. 서버 실측으로 덮어씀.'
+    };
+    baseProperties.evidenceWithoutInterpretation = {
+      type: 'integer',
+      description: '사례 문장 직후 글쓴이 해석/판단/의문 문장이 따라붙지 않은 케이스 수. 0이어야 통과 (룰 11). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.evidencePerParagraphMax = {
+      type: 'integer',
+      description: '한 단락 안에 등장하는 사례 인용 최대 개수. 2 이하 (룰 11). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.topicFocusRatio = {
+      type: 'number',
+      description: '입력이 다항목 주제(ESG의 E/S/G, N분야 등)일 때 가장 비중 큰 sub-topic의 분량 비율(0~1). 0.5 이상 (룰 12). 다항목 아니면 -1로 보고하여 검증 skip.'
+    };
     baseRequired.push(
       'questionSentenceCount', 'conjunctionStartRatio',
       'lastSentenceIsReassurance', 'paragraphLengthRatio',
       'commaClauseRatio', 'shortRunWithoutComma',
       'tinySentenceCount', 'longShortAdjacencyCount',
-      'sameEndingRun', 'similarLengthRun', 'spellingIssues'
+      'sameEndingRun', 'similarLengthRun', 'spellingIssues',
+      'evidenceCount', 'evidenceWithoutInterpretation',
+      'evidencePerParagraphMax', 'topicFocusRatio'
     );
   }
 
@@ -574,6 +592,44 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       overrides.push(`spellingIssues ${(result.spellingIssues || []).length} → ${spellIssues.length}`);
       result.spellingIssues = spellIssues;
     }
+
+    // ===== 룰 11: 사례 누적 / 사례 직후 해석 누락 실측 =====
+    // evidence 문장 휴리스틱: 객관 사실/수치/인용 마커. 도메인 무관 일반화.
+    const evidenceRe = new RegExp([
+      '(?:19|20)\\d{2}',                                    // 연도
+      '\\d+(?:\\.\\d+)?\\s*(?:%|％|퍼센트|배|건|명|개|곳|회|차|년|위|등)',  // 수치+단위
+      '\\d+(?:,\\d{3})*\\s*(?:원|달러|엔|위안|유로|만|억|조)',          // 화폐/규모
+      '(?:에 따르면|에 의하면|조사 결과|발표(?:했|에)|보고서|통계청|한국은행|기상청|p\\s*[<≤=]\\s*0\\.\\d+)'  // 인용·통계 마커
+    ].join('|'));
+    const evidenceFlags = sentences.map(s => evidenceRe.test(s));
+    const actualEvidenceCount = evidenceFlags.filter(Boolean).length;
+    if (actualEvidenceCount > (result.evidenceCount || 0)) {
+      overrides.push(`evidenceCount ${result.evidenceCount} → ${actualEvidenceCount}`);
+      result.evidenceCount = actualEvidenceCount;
+    }
+
+    // 사례 문장 직후 해석 누락: 다음 문장도 evidence이면 누락 카운트++
+    // 마지막 문장이 evidence인 케이스는 lastSentenceIsReassurance/별도 룰에 맡기고 여기선 인접만 검출.
+    let evidenceNoInterp = 0;
+    for (let i = 0; i < evidenceFlags.length - 1; i++) {
+      if (evidenceFlags[i] && evidenceFlags[i + 1]) evidenceNoInterp++;
+    }
+    if (evidenceNoInterp > (result.evidenceWithoutInterpretation || 0)) {
+      overrides.push(`evidenceWithoutInterpretation ${result.evidenceWithoutInterpretation} → ${evidenceNoInterp}`);
+      result.evidenceWithoutInterpretation = evidenceNoInterp;
+    }
+
+    // 단락별 사례 밀도: 한 단락당 최대 evidence 개수
+    let evidencePerParaMax = 0;
+    for (const p of paragraphs) {
+      const ps = p.split(/(?<=[.!?？。])\s+/).map(s => s.trim()).filter(Boolean);
+      const cnt = ps.filter(s => evidenceRe.test(s)).length;
+      if (cnt > evidencePerParaMax) evidencePerParaMax = cnt;
+    }
+    if (evidencePerParaMax > (result.evidencePerParagraphMax || 0)) {
+      overrides.push(`evidencePerParagraphMax ${result.evidencePerParagraphMax} → ${evidencePerParaMax}`);
+      result.evidencePerParagraphMax = evidencePerParaMax;
+    }
   }
 
   // 임계 기준으로 selfCheckPass 재계산 (collectFailedFields와 동일 기준)
@@ -600,7 +656,12 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       || (result.sameEndingRun || 0) >= 3
       || (result.similarLengthRun || 0) >= 3
       || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
-      || !!result.lengthShortfall;
+      || !!result.lengthShortfall
+      || (result.evidenceWithoutInterpretation || 0) >= 1
+      || (result.evidencePerParagraphMax || 0) >= 3
+      || (typeof result.topicFocusRatio === 'number'
+          && result.topicFocusRatio >= 0
+          && result.topicFocusRatio < 0.5);
   }
 
   const recomputedPass = !violations;
@@ -625,6 +686,8 @@ function shouldRefine(result, mode) {
     || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
     || (mode === 'assignment' && !!result.paragraphCountMismatch)
     || (mode === 'assignment' && result.lastSentenceIsReassurance === true)
+    || (mode === 'assignment' && (result.evidenceWithoutInterpretation || 0) >= 1)
+    || (mode === 'assignment' && (result.evidencePerParagraphMax || 0) >= 3)
     || !!result.lengthShortfall;
   if (critical) return { refine: true, reason: 'critical' };
 
@@ -637,6 +700,7 @@ function shouldRefine(result, mode) {
     if (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.40) minor++;
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
+    if (typeof result.topicFocusRatio === 'number' && result.topicFocusRatio >= 0 && result.topicFocusRatio < 0.4) minor++;
   }
   return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
 }
@@ -702,6 +766,15 @@ function collectFailedFields(r, mode) {
     }
     if (Array.isArray(r.spellingIssues) && r.spellingIssues.length > 0) {
       failed.push(`맞춤법/띄어쓰기 오류(P0): ${r.spellingIssues.join(', ')} — 해당 표기 교정`);
+    }
+    if ((r.evidenceWithoutInterpretation || 0) >= 1) {
+      failed.push(`사례 직후 해석 누락 ${r.evidenceWithoutInterpretation}건(룰 11) — 연도·기업·통계 인용 문장 다음에는 글쓴이 판단·의문·반전 1문장을 반드시 붙여라. 사례를 연달아 나열하지 마라.`);
+    }
+    if ((r.evidencePerParagraphMax || 0) >= 3) {
+      failed.push(`한 단락에 사례 ${r.evidencePerParagraphMax}건 누적(룰 11, 최대 2건) — 한 단락 = 한 사례 = 한 해석. 다른 사례는 별도 단락이나 한 줄 압축으로 옮겨라.`);
+    }
+    if (typeof r.topicFocusRatio === 'number' && r.topicFocusRatio >= 0 && r.topicFocusRatio < 0.5) {
+      failed.push(`다항목 주제를 균등 분배(최대 비중 ${(r.topicFocusRatio * 100).toFixed(0)}%, 룰 12, 목표 50%+) — 1~2개 항목만 깊이 풀고 나머지는 1문장 이하로 압축하거나 생략. 모든 항목을 같은 패턴(정의→사례→평가)으로 풀지 마라.`);
     }
   }
   return failed;
