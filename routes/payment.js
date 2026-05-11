@@ -133,6 +133,8 @@ function getOrderRef(kind, orderId) {
 }
 
 const REFUND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// 무료 보너스(회원가입 10 + 추천 20×N)는 결제 크레딧보다 먼저 소진된다고 가정.
+// → 지갑에 남은 크레딧은 모두 결제분으로 간주하고 주문 크레딧 수만큼만 cap.
 
 // 환불 요청 (사용자용) — kind: 'order' (기본, 크레딧 일회성) | 'subscription' (정기결제)
 router.post('/request-refund', async (req, res) => {
@@ -180,6 +182,14 @@ router.post('/request-refund', async (req, res) => {
         // 과거 사이클 결제는 환불 불가 (해당 사이클 사용 여부를 더 이상 추적할 수 없음)
         return res.status(400).json({ error: '과거 사이클의 정기결제는 환불할 수 없습니다.' });
       }
+    } else {
+      // 크레딧 환불: 잔액이 0이면 신청 차단
+      const userSnap = await db.collection('users').doc(uid).get();
+      const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
+      const refundableCredits = Math.min(currentCredits, parseInt(order.safeCredits) || 0);
+      if (refundableCredits <= 0) {
+        return res.status(400).json({ error: '이미 모든 크레딧을 사용해 환불 가능 금액이 없습니다.' });
+      }
     }
 
     await orderRef.update({
@@ -221,32 +231,26 @@ router.post('/approve-refund', async (req, res) => {
       return res.status(400).json({ error: 'paymentKey가 없어 환불할 수 없습니다. (이전 결제건)' });
     }
 
-    // 토스페이먼츠 결제 취소 API 호출
+    const userRef = db.collection('users').doc(order.uid);
     const secretKey = process.env.TOSS_SECRET_KEY;
     const basicToken = Buffer.from(secretKey + ':').toString('base64');
-
-    const tossRes = await fetch(`https://api.tosspayments.com/v1/payments/${order.paymentKey}/cancel`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${basicToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ cancelReason: order.cancelReason || '고객 요청 환불' })
-    });
-
-    const tossResult = await tossRes.json();
-
-    if (!tossRes.ok) {
-      console.error('❌ 토스 환불 실패:', tossResult);
-      return res.status(tossRes.status).json({
-        error: '토스 환불 처리 실패: ' + (tossResult.message || '알 수 없는 오류')
-      });
-    }
-
-    const userRef = db.collection('users').doc(order.uid);
+    const tossUrl = `https://api.tosspayments.com/v1/payments/${order.paymentKey}/cancel`;
 
     if (kind === 'subscription') {
-      // 정기결제 환불: 구독 즉시 만료 + 쿠폰 0 + plan 강등
+      // 정기결제: 전액 취소
+      const tossRes = await fetch(tossUrl, {
+        method: 'POST',
+        headers: { 'Authorization': `Basic ${basicToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cancelReason: order.cancelReason || '고객 요청 환불' })
+      });
+      const tossResult = await tossRes.json();
+      if (!tossRes.ok) {
+        console.error('❌ 토스 환불 실패:', tossResult);
+        return res.status(tossRes.status).json({
+          error: '토스 환불 처리 실패: ' + (tossResult.message || '알 수 없는 오류')
+        });
+      }
+
       await db.runTransaction(async (t) => {
         t.update(orderRef, {
           status: 'refunded',
@@ -267,35 +271,97 @@ router.post('/approve-refund', async (req, res) => {
         });
       });
       console.log(`✅ 정기결제 환불 완료: ${orderId} (uid=${order.uid}, 관리자=${adminUid})`);
-    } else {
-      // 크레딧 환불 (기존 로직)
-      await db.runTransaction(async (transaction) => {
-        const userSnap = await transaction.get(userRef);
-        const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
-        const newCredits = Math.max(0, currentCredits - order.safeCredits);
-
-        transaction.update(orderRef, {
-          status: 'refunded',
-          refundedAt: admin.firestore.FieldValue.serverTimestamp(),
-          refundedBy: adminUid
-        });
-
-        transaction.update(userRef, { credits: newCredits });
-
-        const historyRef = db.collection('users').doc(order.uid)
-          .collection('creditHistory').doc();
-        transaction.set(historyRef, {
-          type: 'refund',
-          used: 0,
-          amount: -order.safeCredits,
-          remaining: newCredits,
-          orderId: orderId,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-      });
-      console.log(`✅ 크레딧 환불 완료: ${orderId} (${order.safeCredits}크레딧 차감, 관리자: ${adminUid})`);
+      return res.json({ ok: true, message: '환불이 완료되었습니다.' });
     }
 
+    // 크레딧 부분환불: 토스 호출 전에 트랜잭션으로 선차감 → 토스 → 확정/보상
+    const orderAmount = parseInt(order.amount);
+    const safeCreditsTotal = parseInt(order.safeCredits);
+    if (!Number.isFinite(orderAmount) || orderAmount <= 0 ||
+        !Number.isFinite(safeCreditsTotal) || safeCreditsTotal <= 0) {
+      return res.status(400).json({ error: '주문 데이터가 올바르지 않아 환불 계산이 불가합니다.' });
+    }
+    let refundAmount, refundableCredits;
+    try {
+      const result = await db.runTransaction(async (transaction) => {
+        const userSnap = await transaction.get(userRef);
+        const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
+        const refundable = Math.min(currentCredits, safeCreditsTotal);
+        if (refundable <= 0) throw new Error('NO_REFUNDABLE');
+        const amount = Math.floor(orderAmount * refundable / safeCreditsTotal);
+        if (!Number.isFinite(amount) || amount <= 0) throw new Error('INVALID_AMOUNT');
+        transaction.update(userRef, { credits: currentCredits - refundable });
+        transaction.update(orderRef, {
+          refundAmount: amount,
+          refundedCredits: refundable
+        });
+        return { refundAmount: amount, refundableCredits: refundable };
+      });
+      refundAmount = result.refundAmount;
+      refundableCredits = result.refundableCredits;
+    } catch (e) {
+      if (e.message === 'NO_REFUNDABLE') {
+        return res.status(400).json({ error: '이미 모든 크레딧을 사용해 환불 가능 금액이 없습니다.' });
+      }
+      if (e.message === 'INVALID_AMOUNT') {
+        return res.status(400).json({ error: '환불 금액 계산 오류' });
+      }
+      throw e;
+    }
+
+    const tossRes = await fetch(tossUrl, {
+      method: 'POST',
+      headers: { 'Authorization': `Basic ${basicToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cancelReason: order.cancelReason || '고객 요청 환불',
+        cancelAmount: refundAmount
+      })
+    });
+    const tossResult = await tossRes.json();
+
+    if (!tossRes.ok) {
+      // 보상: 선차감한 크레딧 복구 + 임시 필드 제거
+      try {
+        await db.runTransaction(async (transaction) => {
+          const userSnap = await transaction.get(userRef);
+          const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
+          transaction.update(userRef, { credits: currentCredits + refundableCredits });
+          transaction.update(orderRef, {
+            refundAmount: admin.firestore.FieldValue.delete(),
+            refundedCredits: admin.firestore.FieldValue.delete()
+          });
+        });
+      } catch (compErr) {
+        console.error('🚨 보상 트랜잭션 실패. 수동 복구 필요:', {
+          orderId, uid: order.uid, refundableCredits, refundAmount, compErr
+        });
+      }
+      console.error('❌ 토스 환불 실패:', tossResult);
+      return res.status(tossRes.status).json({
+        error: '토스 환불 처리 실패: ' + (tossResult.message || '알 수 없는 오류')
+      });
+    }
+
+    await db.runTransaction(async (transaction) => {
+      const userSnap = await transaction.get(userRef);
+      const remainingCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
+      transaction.update(orderRef, {
+        status: 'refunded',
+        refundedAt: admin.firestore.FieldValue.serverTimestamp(),
+        refundedBy: adminUid
+      });
+      const historyRef = db.collection('users').doc(order.uid).collection('creditHistory').doc();
+      transaction.set(historyRef, {
+        type: 'refund',
+        used: 0,
+        amount: -refundableCredits,
+        remaining: remainingCredits,
+        orderId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    });
+
+    console.log(`✅ 크레딧 부분환불 완료: ${orderId} (${refundableCredits}크레딧/${refundAmount}원, 관리자: ${adminUid})`);
     res.json({ ok: true, message: '환불이 완료되었습니다.' });
   } catch (err) {
     console.error('❌ 환불 승인 에러:', err);
