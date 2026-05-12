@@ -138,8 +138,15 @@ function authErrorMessage(code) {
 // ★ mode별 스키마 분기: assignment만 의문문/접속사/P3/문단비율 필드 강제
 // 함수명에 "Tool"이 남아 있는 건 기존 구조 유지용 — 실제로는 OpenAI strict json_schema로 변환됨
 function buildHumanizeTool(mode) {
+  // ★ JSON-CoT 베스트 프랙티스(ACL submission + Pockit/Collin Wilkins 2026): reasoning 필드를 answer 필드 앞에 둠.
+  //   reasoning before answer → +60% 정확도 (GSM8k 측정), 모델이 답을 선커밋한 뒤 사후 합리화하는 우회 차단.
+  //   plan 필드를 outputText 앞에 두어 모델이 글 작성 *전*에 룰 적용 계획을 명시하게 한다.
   const baseProperties = {
-    outputText: { type: 'string', description: '변환된 글 전체' },
+    plan: {
+      type: 'string',
+      description: '글 작성 전 필수 적용 계획: (1) 시스템 프롬프트의 P0과 룰 1~12 중 이 글에 가장 위험한 룰 3개를 식별, (2) 어떤 표현/패턴을 피할지 구체 토큰 수준에서 명시(예: "과장일까요?", "것같습니다" 금지), (3) 원문의 흐름이 시간 순서·도입-전개-결론·문제-해결 같은 전형 프레임이면 어떻게 재배치할지. 3~6문장.'
+    },
+    outputText: { type: 'string', description: '변환된 글 전체. plan에 명시한 계획대로 작성.' },
     summary:    { type: 'string', description: '변환 요약 2문장. 존댓말(~입니다/~합니다체)로 작성.' },
     detail:     { type: 'string', description: '적용한 기법 상세. 존댓말(~입니다/~합니다체)로 작성.' },
     topNounCounts: {
@@ -169,7 +176,7 @@ function buildHumanizeTool(mode) {
     }
   };
   const baseRequired = [
-    'outputText', 'summary', 'detail',
+    'plan', 'outputText', 'summary', 'detail',
     'topNounCounts', 'listOfThreeCount', 'consecutiveNounSubjectMax',
     'shortSentenceRatio', 'hedgeRatio', 'selfCheckPass'
   ];
@@ -370,6 +377,16 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
     if (actualQuestions !== (result.questionSentenceCount || 0)) {
       overrides.push(`questionSentenceCount ${result.questionSentenceCount} → ${actualQuestions}`);
       result.questionSentenceCount = actualQuestions;
+    }
+
+    // 수사적 의문문 카운트 — 룰 6 강행 규정 "수사적 의문문 0회"
+    // LLM이 negative instruction 못 따르는 한계 보완. 0보다 크면 critical violation.
+    const rhetoricalRe = /(까요|일까요|이지\s*않을까요|않을까요|아닐까요|아닐지요|이지\s*않은가요|그럴까요|과장일까요|아닐까)\?/g;
+    const rhetoricalMatches = text.match(rhetoricalRe) || [];
+    const actualRhetorical = rhetoricalMatches.length;
+    if (actualRhetorical !== (result.rhetoricalQuestionCount || 0)) {
+      overrides.push(`rhetoricalQuestionCount ${result.rhetoricalQuestionCount} → ${actualRhetorical}`);
+      result.rhetoricalQuestionCount = actualRhetorical;
     }
 
     // 접속사/전환어구 시작 실측
@@ -586,7 +603,17 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       // 합성 동사 '들여다보다/돌이켜보다/내려다보다/쳐다보다' 띄어쓰기 잘못
       { re: /(들여다|돌이켜|내려다|쳐다|올려다|훑어|살펴|돌아|들여다)\s(보|봤|본|보는|봅)/, msg: '합성동사→붙여 쓰기' },
       // '본 것' 의존명사 (이것이/그것이) + 동사 띄어쓰기 — 추가 안전망
-      { re: /(된|한|할|할|쓴|본|들은|만든|받은|배운|찾은|준)걸(\s|$|[.,!?])/, msg: '~ㄴ걸→~ㄴ 걸' }
+      { re: /(된|한|할|할|쓴|본|들은|만든|받은|배운|찾은|준)걸(\s|$|[.,!?])/, msg: '~ㄴ걸→~ㄴ 걸' },
+      // P0 추가 (사용자 글 실측 위반 — Pass C에서도 강제 치환됨)
+      { re: /(추위|더위|비|바람|눈|햇볕|소음|적|위협|영향)\s+로부터/, msg: '~ 로부터→~로부터' },
+      { re: /(구조물|건물|건축물|시설물|결과물|기능|기술|역할|수준|효과|영향|기대)이상의/, msg: '~이상의→~ 이상의' },
+      { re: /(지속가능성|중요성|필요성|가치|효과|영향|결과|차이|모습|존재)\s+까지/, msg: '~ 까지→~까지' },
+      { re: /(있|없|모르|아)는\s지(는|를|에|에서|보다|만|도)?([.,!?\s]|$)/, msg: '~는 지→~는지' },
+      { re: /(완공|시작|건설|체결|발표|발견|도입|개최|설립)되었을때/, msg: '~되었을때→~되었을 때' },
+      { re: /기도합니다/, msg: '기도합니다→기도 합니다' },
+      { re: /한가지(로|만|에|가|를|도|의)/, msg: '한가지→한 가지' },
+      { re: /(일|사실|영향|결과|효과|일상|문제|역할)뿐아니라/, msg: '~뿐아니라→~뿐 아니라' },
+      { re: /(빠질|할|볼|쓸|올|갈|줄|얻을|받을|만날|보낼|읽을)수\s/, msg: '~ㄹ수→~ㄹ 수' }
     ];
     const spellIssues = spellingRules.filter(r => r.re.test(text)).map(r => r.msg);
     if (spellIssues.length > (result.spellingIssues?.length || 0)) {
@@ -645,6 +672,7 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
     violations = violations
       || (typeof result.conjunctionStartRatio === 'number' && result.conjunctionStartRatio > 0.15)
       || result.lastSentenceIsReassurance === true
+      || (result.rhetoricalQuestionCount || 0) > 0
       || (typeof result.paragraphLengthRatio === 'number'
           && result.paragraphLengthRatio >= 0
           && result.paragraphLengthRatio < 2)
@@ -686,6 +714,7 @@ function shouldRefine(result, mode) {
     || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
     || (mode === 'assignment' && !!result.paragraphCountMismatch)
     || (mode === 'assignment' && result.lastSentenceIsReassurance === true)
+    || (mode === 'assignment' && (result.rhetoricalQuestionCount || 0) > 0)
     || (mode === 'assignment' && (result.evidenceWithoutInterpretation || 0) >= 1)
     || (mode === 'assignment' && (result.evidencePerParagraphMax || 0) >= 3)
     || !!result.lengthShortfall;
@@ -736,6 +765,9 @@ function collectFailedFields(r, mode) {
     }
     if (r.lastSentenceIsReassurance === true) {
       failed.push(`마지막 문장이 재보증/평가(P3 위반) — '~할 필요가 있다/~에 달려 있다/~지속가능한지는' 대신 구체 사례·미해결 질문·관찰로 닫아라`);
+    }
+    if ((r.rhetoricalQuestionCount || 0) > 0) {
+      failed.push(`수사적 의문문 ${r.rhetoricalQuestionCount}건 — 룰 6 강행 규정 "수사적 의문문 글 전체 0회" 위반. '~까요?', '~지 않을까요?', '과장일까요?' 같은 자기 의견 회피 의문문은 모두 단정문으로 교체. 예: '과장일까요?' → '과장된 해석은 아닙니다.' / '~지 않을까요?' → '~지 않습니다.'`);
     }
     if ((r.questionSentenceCount || 0) === 0) {
       failed.push(`의문문 0건(규칙 9, 최소 1건) — 주장 중 하나를 '정말 ~일까?' 같은 의문형으로 전환`);
@@ -819,7 +851,20 @@ const MECHANICAL_LEXICON = [
   { from: /다각적/g, to: '여러 면의' },
   { from: /혁신적/g, to: '새로운' },
   { from: /뜻깊은/g, to: '의미 있는' },
-  { from: /소중한/g, to: '중요한' }
+  { from: /소중한/g, to: '중요한' },
+  // P0 띄어쓰기 — LLM이 negative instruction 못 따르므로 deterministic 강제 (사용자 글 실측 위반)
+  { from: /것같(다|습니다|아요|네요|은|던)/g, to: '것 같$1' },
+  { from: /(추위|더위|비|바람|눈|햇볕|소음|적|위협|영향)\s+로부터/g, to: '$1로부터' },
+  { from: /(구조물|건물|건축물|시설물|결과물|기능|기술|역할|수준|효과|영향|기대)이상의/g, to: '$1 이상의' },
+  { from: /(지속가능성|중요성|필요성|가치|효과|영향|결과|차이|모습|존재)\s+까지/g, to: '$1까지' },
+  { from: /(있|없|모르|아|어떠하)는\s지(는|를|에|에서|보다|만|도)?([.,!?\s]|$)/g, to: '$1는지$2$3' },
+  { from: /기도합니다/g, to: '기도 합니다' },
+  // P0: 의존명사 띄어쓰기 추가 안전망 (사용자 글 실측)
+  { from: /(완공|시작|건설|체결|발표|발견|도입|개최|설립)되었을때/g, to: '$1되었을 때' },
+  { from: /(지키|만들|살|쓰|배우|찾|보|걸|구하|이해하|받아들이|판단하|결정하|해결하)는데(\s|[.,!?])/g, to: '$1는 데$2' },
+  { from: /한가지(로|만|에|가|를|도|의)/g, to: '한 가지$1' },
+  { from: /(일|사실|영향|결과|효과|일상|문제|역할)뿐아니라/g, to: '$1뿐 아니라' },
+  { from: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을)수\s/g, to: '$1 수 ' }
 ];
 
 function enforceMechanicalRules(text) {
