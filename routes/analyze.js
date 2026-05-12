@@ -164,11 +164,11 @@ function buildHumanizeTool(mode) {
     },
     shortSentenceRatio: {
       type: 'number',
-      description: '15자 이하 단문 수 / 전체 문장 수. 0.20 이상 (P2)'
+      description: '15자 이하 단문 수 / 전체 문장 수. 룰 2(평균 40~55자) 정합 — 단문은 *제한* 방향(문단당 1개 정도). 정보용 측정, 강제 임계 없음.'
     },
     hedgeRatio: {
       type: 'number',
-      description: '추정 어미("~인 것 같다","~라고 생각한다","~던 것 같다") 사용 문장 / 전체 문장. 인간 분포 0.10~0.20 (룰 6 hedge 풀세트). 한국어 카피킬러는 hedge를 인간 시그너처로 학습 — 권장 분량 자연스럽게 배치.'
+      description: '추정 어미("~인 것 같다","~라고 생각한다","~던 것 같다") 사용 문장 / 전체 문장. 인간 분포 0.10~0.20 (룰 6 hedge 풀세트). 한국어 카피킬러는 hedge를 인간 시그너처로 학습 — 10~20% 자연스럽게 배치. 너무 낮으면 LLM처럼 단정적, 너무 높으면 과교정.'
     },
     selfCheckPass: {
       type: 'boolean',
@@ -200,19 +200,19 @@ function buildHumanizeTool(mode) {
     };
     baseProperties.commaClauseRatio = {
       type: 'number',
-      description: '쉼표 포함 + 종결/연결어미(다/니다/며/고/어서/아서/면서/는데/지만 등)가 2개 이상인 문장 / 전체. 0.30 이하 (P1). 서버 실측으로 덮어씀.'
+      description: '쉼표 포함 + 종결/연결어미(다/니다/며/고/어서/아서/면서/는데/지만 등)가 2개 이상인 문장 / 전체. 0.20 이하 (룰 4 콤마 절제 — KatFishNet 측정 한국어 LLM은 인간보다 콤마 2.3배 사용). 서버 실측으로 덮어씀.'
     };
     baseProperties.shortRunWithoutComma = {
       type: 'integer',
-      description: '쉼표 없는 평서문 3연속 구간 개수. 1 이상 (P1). 서버 실측으로 덮어씀.'
+      description: '쉼표 없는 평서문 3연속 구간 개수. 룰 4 콤마 절제 정합 — 정보용 측정, 강제 임계 없음. 서버 실측으로 덮어씀.'
     };
     baseProperties.tinySentenceCount = {
       type: 'integer',
-      description: '8자 이하 초단문 개수(공백 제외). 2 이상 (P2). 서버 실측으로 덮어씀.'
+      description: '8자 이하 초단문 개수(공백 제외). 룰 2(평균 40~55자, 단문 20~30자) 정합 — 정보용 측정, 강제 임계 없음. 서버 실측으로 덮어씀.'
     };
     baseProperties.longShortAdjacencyCount = {
       type: 'integer',
-      description: '40자+ 장문 바로 뒤에 10자 이하 단문이 오는 경우 수. 1 이상 (P2). 서버 실측으로 덮어씀.'
+      description: '40자+ 장문 바로 뒤에 10자 이하 단문이 오는 경우 수. 룰 2 정합 — 정보용 측정, 강제 임계 없음. 서버 실측으로 덮어씀.'
     };
     baseProperties.sameEndingRun = {
       type: 'integer',
@@ -675,8 +675,8 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
   let violations =
     (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4)) ||
     result.listOfThreeCount >= 1 ||
-    result.consecutiveNounSubjectMax >= 3 ||
-    (typeof result.shortSentenceRatio === 'number' && result.shortSentenceRatio < 0.20);
+    result.consecutiveNounSubjectMax >= 3;
+    // shortSentenceRatio 위반 폐기 — 룰 2 갱신(평균 40~55자, 단문 *제한*)과 정면 충돌.
     // hedgeRatio 위반 폐기 (사용자 0% 통과 글 hedgeRatio 16.7% — 인간 분포가 5~20%).
     // 한국어 카피킬러는 hedge·관찰형 종결을 인간 시그너처로 학습. 우리 룰 6 가정 정면 반대.
 
@@ -692,10 +692,10 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
           && result.paragraphLengthRatio >= 0
           && result.paragraphLengthRatio < 2)
       || !!result.paragraphCountMismatch
-      || (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.30)
-      || (result.shortRunWithoutComma || 0) < 1
-      || (result.tinySentenceCount || 0) < 2
-      || (result.longShortAdjacencyCount || 0) < 1
+      || (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.20)
+      // shortRunWithoutComma·tinySentenceCount·longShortAdjacencyCount 위반 폐기.
+      // 룰 2 갱신(평균 40~55자, 단문 20~30자) + 룰 4 갱신(콤마 절제)과 충돌.
+      // 단문 강제는 룰 2 단문 *제한* 방향과 정면 반대.
       || (result.sameEndingRun || 0) >= 3
       || (result.similarLengthRun || 0) >= 3
       || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
@@ -738,12 +738,12 @@ function shouldRefine(result, mode) {
   if (critical) return { refine: true, reason: 'critical' };
 
   let minor = 0;
-  if (typeof result.shortSentenceRatio === 'number' && result.shortSentenceRatio < 0.15) minor++;
-  if (typeof result.hedgeRatio === 'number' && (result.hedgeRatio < 0.07 || result.hedgeRatio > 0.18)) minor++;
+  // shortSentenceRatio < 0.15 minor 폐기 — 룰 2 갱신(단문 제한)과 충돌.
+  if (typeof result.hedgeRatio === 'number' && (result.hedgeRatio < 0.07 || result.hedgeRatio > 0.22)) minor++;
   if ((result.consecutiveNounSubjectMax || 0) >= 4) minor++;
   if (mode === 'assignment') {
     if (typeof result.conjunctionStartRatio === 'number' && result.conjunctionStartRatio > 0.20) minor++;
-    if (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.40) minor++;
+    if (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.30) minor++;
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
     if (typeof result.topicFocusRatio === 'number' && result.topicFocusRatio >= 0 && result.topicFocusRatio < 0.4) minor++;
@@ -770,10 +770,7 @@ function collectFailedFields(r, mode) {
   if (r.consecutiveNounSubjectMax >= 3) {
     failed.push(`명사 주어 ${r.consecutiveNounSubjectMax}연속(룰 3 비명사 시작) — 중간 문장을 부사/접속사/지시어로 시작`);
   }
-  if (typeof r.shortSentenceRatio === 'number' && r.shortSentenceRatio < 0.20) {
-    failed.push(`15자 이하 단문 비율 ${(r.shortSentenceRatio * 100).toFixed(0)}%(P2, 목표 20%+) — 긴 문장을 쪼개라`);
-  }
-  if (typeof r.hedgeRatio === 'number' && (r.hedgeRatio < 0.10 || r.hedgeRatio > 0.15)) {
+  if (typeof r.hedgeRatio === 'number' && (r.hedgeRatio < 0.10 || r.hedgeRatio > 0.20)) {
     failed.push(`추정 어미 비율 ${(r.hedgeRatio * 100).toFixed(0)}%(룰 6 hedge 풀세트, 인간 분포 10~20%) — 자연스러운 분량으로 조정. hedge는 인간 시그너처라 너무 낮으면 LLM처럼 단정적, 너무 높으면 과교정.`);
   }
   if (mode === 'assignment') {
@@ -797,23 +794,14 @@ function collectFailedFields(r, mode) {
     if (r.paragraphCountMismatch) {
       failed.push(`문단 수 불일치: 입력 ${r.paragraphCountMismatch.input}문단 → 출력 ${r.paragraphCountMismatch.output}문단. 원문의 문단 수를 그대로 유지하라. \\n\\n을 추가/삭제하지 말 것.`);
     }
-    if (typeof r.commaClauseRatio === 'number' && r.commaClauseRatio > 0.30) {
-      failed.push(`쉼표 복문 비율 ${(r.commaClauseRatio * 100).toFixed(0)}%(P1, 목표 30% 이하) — 쉼표로 이어붙인 긴 문장을 마침표로 끊어 독립 문장으로 재배치`);
-    }
-    if ((r.shortRunWithoutComma || 0) < 1) {
-      failed.push(`쉼표 없는 3문장 연속 구간 0회(P1, 최소 1회) — 쉼표 없이 짧은 단정문이 3개 이어지는 구간을 1회 이상 만들어라`);
-    }
-    if ((r.tinySentenceCount || 0) < 2) {
-      failed.push(`8자 이하 초단문 ${r.tinySentenceCount || 0}개(P2, 최소 2개) — "그게 전부입니다." "숫자가 말해줍니다." 같은 초단문 추가`);
-    }
-    if ((r.longShortAdjacencyCount || 0) < 1) {
-      failed.push(`장문(40자+) 뒤 단문(10자-) 인접 0회(P2, 최소 1회) — 긴 문장 직후에 10자 이하 단문 배치`);
+    if (typeof r.commaClauseRatio === 'number' && r.commaClauseRatio > 0.20) {
+      failed.push(`쉼표 복문 비율 ${(r.commaClauseRatio * 100).toFixed(0)}%(룰 4 콤마 절제, 목표 20% 이하 — KatFishNet 측정 한국어 LLM 시그너처 직격) — 쉼표로 이어붙인 긴 문장을 마침표로 끊어 독립 문장으로 재배치. 한 문장 콤마 1개 이하 권장.`);
     }
     if ((r.sameEndingRun || 0) >= 3) {
       failed.push(`동일 종결어미 ${r.sameEndingRun}연속(룰 1 종결어미 다양화 — 4문장 연속 금지) — 3번째 문장을 변형 종결(~까요? / ~던 것 같습니다 / ~인지도 모릅니다 / ~기도 합니다)로 교체`);
     }
     if ((r.similarLengthRun || 0) >= 3) {
-      failed.push(`문장 길이 ±5자 ${r.similarLengthRun}연속(룰 2 문장 길이) — 중간 문장을 대폭 줄이거나 늘려서 리듬 파괴. 평균 30~45자 권장 + 단문(15~25자) 1개 정도로 호흡 끊기.`);
+      failed.push(`문장 길이 ±5자 ${r.similarLengthRun}연속(룰 2 문장 길이) — 중간 문장을 대폭 줄이거나 늘려서 리듬 파괴. 평균 40~55자 권장 + 단문(20~30자) 1개 정도로 호흡 끊기, 중장문(50~75자) 자연스럽게 섞기.`);
     }
     if (Array.isArray(r.spellingIssues) && r.spellingIssues.length > 0) {
       failed.push(`맞춤법/띄어쓰기 오류(P0): ${r.spellingIssues.join(', ')} — 해당 표기 교정`);
