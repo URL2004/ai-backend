@@ -1157,9 +1157,13 @@ router.post('/analyze', async (req, res) => {
       }
       usage = data.usage;
     } else {
-      // 웹 검색: 기본 ON, 프런트에서 useWebSearch=false로 명시했을 때만 OFF.
-      // 실패/빈 응답이면 examples=null로 자연 폴백.
-      const useWebSearch = req.body.useWebSearch !== false;
+      // ★ 웹 검색: 기본 OFF로 변경 (사용자 실측 진단 결과).
+      //    이전 기본 ON 동작이 카피킬러 96% 감지의 진범이었음:
+      //    fetchWebSearchExamples가 외부 통계·연도·기관명을 user message에 박고 "녹여 활용" 지시 →
+      //    모델이 단정 사실 + 통계 누적 → LLM overconfidence 시그너처 직격.
+      //    웹 Claude는 web search 없이도 0% 통과 (사용자 실측 확정).
+      //    프런트에서 useWebSearch=true 명시한 호출만 ON.
+      const useWebSearch = req.body.useWebSearch === true;
       const examples = useWebSearch ? await fetchWebSearchExamples(text, lang) : null;
 
       // ★ 휴머나이저: Claude Sonnet tool_use(강제)로 호출. 시스템 프롬프트는 그대로.
