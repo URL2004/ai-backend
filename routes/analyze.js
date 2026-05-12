@@ -389,6 +389,17 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       result.rhetoricalQuestionCount = actualRhetorical;
     }
 
+    // 단정 정의문 카운트 — LLM overconfidence 시그너처 (학술 근거: arxiv 2510.26995, MASH 2601.08564)
+    // 사용자 카피킬러 87% 감지 실측 분석: "[고유명사]는 ~사례입니다 / ~증거입니다 / ~보여줍니다" 패턴이 디텍터에 직접 잡힘.
+    // 룰 5(무생물 정의문 회피)를 모델이 안 지키므로 측정→refine으로 강제.
+    const declarativeRe = /[가-힣A-Za-z0-9]{2,}(?:은|는)\s+[^.!?]{4,}(사례입니다|사례이다|증거입니다|증거이다|증명입니다|증명이다|예시입니다|예시이다|상징입니다|상징이다|표현입니다|표현이다|결과입니다|결과이다|보여줍니다|보여준다|드러냅니다|드러낸다|증명합니다|증명한다|입증합니다|입증한다)[.!?]/g;
+    const declarativeMatches = text.match(declarativeRe) || [];
+    const actualDeclarativeDefinition = declarativeMatches.length;
+    if (actualDeclarativeDefinition !== (result.declarativeDefinitionCount || 0)) {
+      overrides.push(`declarativeDefinitionCount ${result.declarativeDefinitionCount} → ${actualDeclarativeDefinition}`);
+      result.declarativeDefinitionCount = actualDeclarativeDefinition;
+    }
+
     // 접속사/전환어구 시작 실측
     const connectorRe = /^(따라서|그러므로|즉|결국|결론적으로|궁극적으로|이를 위해|이런 흐름 속에서|이러한|한편|또한|게다가|그런데|그래서|사실|물론|그렇다고|하지만|반면|반면에|아울러)\b/;
     const connectorStarts = sentences.filter(s => connectorRe.test(s)).length;
@@ -665,14 +676,18 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
     (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4)) ||
     result.listOfThreeCount >= 1 ||
     result.consecutiveNounSubjectMax >= 3 ||
-    (typeof result.shortSentenceRatio === 'number' && result.shortSentenceRatio < 0.20) ||
-    (typeof result.hedgeRatio === 'number' && (result.hedgeRatio < 0.10 || result.hedgeRatio > 0.15));
+    (typeof result.shortSentenceRatio === 'number' && result.shortSentenceRatio < 0.20);
+    // hedgeRatio 위반 폐기 (사용자 0% 통과 글 hedgeRatio 16.7% — 인간 분포가 5~20%).
+    // 한국어 카피킬러는 hedge·관찰형 종결을 인간 시그너처로 학습. 우리 룰 6 가정 정면 반대.
 
   if (mode === 'assignment') {
     violations = violations
       || (typeof result.conjunctionStartRatio === 'number' && result.conjunctionStartRatio > 0.15)
       || result.lastSentenceIsReassurance === true
-      || (result.rhetoricalQuestionCount || 0) > 0
+      // rhetoricalQuestionCount > 0 위반 폐기 (사용자 0% AFTER 실측: 수사적 의문문 2건 정상)
+      // hedge·rhetorical은 한국어 카피킬러에서 인간 시그너처. 우리 룰 6 가정이 정면 반대였음.
+      || (result.declarativeDefinitionCount || 0) >= 3
+      || (result.evidenceCount || 0) >= 4
       || (typeof result.paragraphLengthRatio === 'number'
           && result.paragraphLengthRatio >= 0
           && result.paragraphLengthRatio < 2)
@@ -714,7 +729,9 @@ function shouldRefine(result, mode) {
     || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
     || (mode === 'assignment' && !!result.paragraphCountMismatch)
     || (mode === 'assignment' && result.lastSentenceIsReassurance === true)
-    || (mode === 'assignment' && (result.rhetoricalQuestionCount || 0) > 0)
+    // rhetoricalQuestionCount > 0 critical 폐기 (사용자 0% AFTER 실측: 2건 정상)
+    || (mode === 'assignment' && (result.declarativeDefinitionCount || 0) >= 3)
+    || (mode === 'assignment' && (result.evidenceCount || 0) >= 4)
     || (mode === 'assignment' && (result.evidenceWithoutInterpretation || 0) >= 1)
     || (mode === 'assignment' && (result.evidencePerParagraphMax || 0) >= 3)
     || !!result.lengthShortfall;
@@ -730,7 +747,7 @@ function shouldRefine(result, mode) {
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
     if (typeof result.topicFocusRatio === 'number' && result.topicFocusRatio >= 0 && result.topicFocusRatio < 0.4) minor++;
-    if ((result.evidenceCount || 0) >= 4) minor++;
+    // evidenceCount >= 4 는 critical로 격상됨(O2). minor 트리거에선 제거.
     if ((result.questionSentenceCount || 0) === 0) minor++;
   }
   return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
@@ -810,8 +827,11 @@ function collectFailedFields(r, mode) {
     if (typeof r.topicFocusRatio === 'number' && r.topicFocusRatio >= 0 && r.topicFocusRatio < 0.5) {
       failed.push(`다항목 주제를 균등 분배(최대 비중 ${(r.topicFocusRatio * 100).toFixed(0)}%, 룰 12, 목표 50%+) — 1~2개 항목만 깊이 풀고 나머지는 1문장 이하로 압축하거나 생략. 모든 항목을 같은 패턴(정의→사례→평가)으로 풀지 마라.`);
     }
+    if ((r.declarativeDefinitionCount || 0) >= 3) {
+      failed.push(`단정 정의문 ${r.declarativeDefinitionCount}건 — LLM overconfidence 시그너처 직격(학술 근거: arxiv 2510.26995 LLM 84.3% overconfident, MASH 2601.08564 ASR 92%). "[고유명사]는 ~사례입니다 / ~증거입니다 / ~보여줍니다 / ~상징입니다" 같은 confident declarative 패턴이 카피킬러에 직접 잡힘. 룰 5 인용: "무생물 정의문 시작 금지. 대신 '~를 보면 / ~ 앞에 서면 / ~ 한 채에도' 같은 관찰·능동 시작으로 변환." 절반 이상을 관찰형으로 교체. 예: "엠파이어스테이트 빌딩은 그 시대 기술력의 사례입니다" → "엠파이어스테이트 빌딩을 보면 그 시대 기술력이 한눈에 들어옵니다".`);
+    }
     if ((r.evidenceCount || 0) >= 4) {
-      failed.push(`전체 사례 인용 ${r.evidenceCount}건(룰 11 보강, 권장 0~2건) — 통과 글들은 사례를 거의 안 쓴다. 연도·기업명·통계 인용을 추상 진술과 글쓴이 판단으로 갈아끼우고, 꼭 필요한 한두 개만 남겨라.`);
+      failed.push(`전체 사례 인용 ${r.evidenceCount}건(룰 11 critical, 권장 0~2건) — 사용자 카피킬러 87% 감지 실측: 사례·정량 사실이 한 글에 4건 이상 누적되면 LLM overconfidence 시그너처로 직접 잡힘. 연도·기업명·통계 인용을 추상 진술과 글쓴이 판단으로 갈아끼우고, 꼭 필요한 한두 개만 남겨라. 사례 6~8건이면 절반 이상 삭제.`);
     }
   }
   return failed;
