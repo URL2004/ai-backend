@@ -758,8 +758,8 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
   }
 
   // 임계 기준으로 selfCheckPass 재계산. shouldRefine 임계와 정렬해 "달성 가능한 게이트"로 작동.
+  // topNounCounts ≥4 폐기 — 통과 글 D(0%)에 주제어 반복 있어도 통과. false signal.
   let violations =
-    (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4)) ||
     result.listOfThreeCount >= 1 ||
     result.consecutiveNounSubjectMax >= 4;  // 폐기한 옛 룰 3 잔재 정리, shouldRefine과 일치
     // shortSentenceRatio 위반 폐기 — 룰 2 갱신(평균 40~55자, 단문 *제한*)과 정면 충돌.
@@ -806,9 +806,9 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
 // ★ critical은 7개로 슬림화 — 게이트 다수가 critical이면 refine이 거의 매번 발동돼서
 //   모델이 같은 글을 반복 다듬다 정형성 누적. 진짜 직격(P0/P1 안전망/분량/구조)만 critical.
 function shouldRefine(result, mode) {
+  // topNounCounts ≥4 critical 폐기 — 통과 글 D(0%)에 주제어 반복 있음. false signal.
   const critical =
-    (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4))    // 어휘 반복
-    || (result.listOfThreeCount || 0) >= 1                                              // 콤마 3+ 나열
+    (result.listOfThreeCount || 0) >= 1                                              // 콤마 3+ 나열
     || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)        // P0 맞춤법
     || !!result.lengthShortfall                                                          // 분량 90% 미달
     || (mode === 'assignment' && !!result.paragraphCountMismatch)                        // 문단 수 불일치
@@ -846,10 +846,7 @@ function shouldRefine(result, mode) {
 // 셀프체크 수치를 임계와 대조해 위반된 항목을 사람이 읽을 문장으로 반환
 function collectFailedFields(r, mode) {
   const failed = [];
-  if (r.topNounCounts && Object.values(r.topNounCounts).some(n => n >= 4)) {
-    const over = Object.entries(r.topNounCounts).filter(([, n]) => n >= 4).map(([k, n]) => `"${k}" ${n}회`).join(', ');
-    failed.push(`주제어 4회 이상 반복(룰 5 어휘 다양화): ${over} — 지시어/유의어로 교체`);
-  }
+  // topNounCounts ≥4 메시지 폐기 — 통과 글 D에 주제어 반복 있어도 통과 (사용자 직관).
   if (r.listOfThreeCount >= 1) {
     failed.push(`3개 이상 나열 ${r.listOfThreeCount}건(룰 3 콤마 절 누적 금지, AI 시그너처) — 별도 문장으로 분리하거나 "A부터 C까지" 같은 구간 표현으로`);
   }
