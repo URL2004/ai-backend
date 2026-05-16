@@ -137,18 +137,36 @@ function authErrorMessage(code) {
 // ★ 구조화 출력용 schema 정의 (OpenAI strict json_schema 변환용 베이스)
 // ★ mode별 스키마 분기: assignment만 의문문/접속사/P3/문단비율 필드 강제
 // 함수명에 "Tool"이 남아 있는 건 기존 구조 유지용 — 실제로는 OpenAI strict json_schema로 변환됨
-function buildHumanizeTool(mode) {
+function buildHumanizeTool(mode, lang = 'ko') {
   // ★ JSON-CoT 베스트 프랙티스(ACL submission + Pockit/Collin Wilkins 2026): reasoning 필드를 answer 필드 앞에 둠.
   //   reasoning before answer → +60% 정확도 (GSM8k 측정), 모델이 답을 선커밋한 뒤 사후 합리화하는 우회 차단.
   //   plan 필드를 outputText 앞에 두어 모델이 글 작성 *전*에 룰 적용 계획을 명시하게 한다.
+  const isEn = lang === 'en';
   const baseProperties = {
     plan: {
       type: 'string',
-      description: '글 작성 전 필수 적용 계획. 다음 5개 항목을 1문장씩 명시: (1) 입력 글에 등장한 통계·연도·고유명사·기관명을 모두 나열하고, 출력에서 그대로 유지할 항목만 표시. 입력에 없는 새 통계·연도·고유명사는 절대 추가하지 않는다고 선언. (2) 위 예시 글의 어휘를 그대로 베끼지 않고 톤·구조·hedge 분포만 모방한다고 선언. (3) 시스템 프롬프트의 P0과 룰 1~12 중 이 글에 가장 위험한 룰 3개 식별. (4) 원문 흐름이 전형 프레임이면 재배치 방향. (5) **자연 흐름 우선**: 정보를 한 문장에 압축하지 않고, 문장 사이를 자연 연결 어구(그래서/그런데/다만/물론/결국)로 매끄럽게 잇는다고 선언. 룰 충족이 단절감을 만들면 안 됨. 5~7문장.'
+      description: isEn
+        ? "Mandatory pre-writing plan, written in English. State 1 sentence each for: (1) List every statistic, year, proper noun, and organization name from the input — mark which ones will be kept verbatim, and declare that NO new statistics/years/proper nouns will be introduced. (2) Declare that the example text's vocabulary will NOT be copied; only its tone, structure, and hedge distribution will be imitated. (3) Identify the 3 rules from the system prompt most at risk of being violated for this specific text. (4) If the original follows a stock frame, state the rearrangement direction. (5) **Natural flow first**: declare that information will NOT be compressed into one sentence; natural connectors (so / but / however / in practice / honestly / in the end) will be used between sentences to keep flow smooth. Rule satisfaction must not create a disjointed feel. 5–7 sentences."
+        : '글 작성 전 필수 적용 계획. 다음 5개 항목을 1문장씩 명시: (1) 입력 글에 등장한 통계·연도·고유명사·기관명을 모두 나열하고, 출력에서 그대로 유지할 항목만 표시. 입력에 없는 새 통계·연도·고유명사는 절대 추가하지 않는다고 선언. (2) 위 예시 글의 어휘를 그대로 베끼지 않고 톤·구조·hedge 분포만 모방한다고 선언. (3) 시스템 프롬프트의 P0과 룰 1~12 중 이 글에 가장 위험한 룰 3개 식별. (4) 원문 흐름이 전형 프레임이면 재배치 방향. (5) **자연 흐름 우선**: 정보를 한 문장에 압축하지 않고, 문장 사이를 자연 연결 어구(그래서/그런데/다만/물론/결국)로 매끄럽게 잇는다고 선언. 룰 충족이 단절감을 만들면 안 됨. 5~7문장.'
     },
-    outputText: { type: 'string', description: '변환된 글 전체. plan에 명시한 계획대로 작성.' },
-    summary:    { type: 'string', description: '변환 요약 2문장. 존댓말(~입니다/~합니다체)로 작성.' },
-    detail:     { type: 'string', description: '적용한 기법 상세. 존댓말(~입니다/~합니다체)로 작성.' },
+    outputText: {
+      type: 'string',
+      description: isEn
+        ? 'The full rewritten text, written in English. Follow the plan above.'
+        : '변환된 글 전체. plan에 명시한 계획대로 작성.'
+    },
+    summary: {
+      type: 'string',
+      description: isEn
+        ? 'A 2-sentence summary of the transformation, written in English.'
+        : '변환 요약 2문장. 존댓말(~입니다/~합니다체)로 작성.'
+    },
+    detail: {
+      type: 'string',
+      description: isEn
+        ? 'Detailed description of the techniques applied, written in English.'
+        : '적용한 기법 상세. 존댓말(~입니다/~합니다체)로 작성.'
+    },
     topNounCounts: {
       type: 'object',
       description: 'outputText에서 가장 많이 등장하는 주제어(명사) 상위 3개와 횟수. 예: {"배출":2,"정부":1}. 어떤 값도 4 이상이면 룰 7(어휘 다양화) 위반 — 재작성',
@@ -265,19 +283,32 @@ function buildHumanizeTool(mode) {
   };
 }
 
-const DETECT_TOOL = {
-  name: 'return_detection_result',
-  description: 'AI 생성 확률 판정 결과를 반환한다.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      probability: { type: 'number', description: '0~100 사이 AI 생성 확률' },
-      summary:     { type: 'string', description: '핵심 판단 이유 1~2문장. 존댓말(~입니다/~합니다체)로 작성.' },
-      detail:      { type: 'string', description: '상세 분석 100자 이상. 존댓말(~입니다/~합니다체)로 작성.' }
-    },
-    required: ['probability', 'summary', 'detail']
-  }
-};
+function buildDetectTool(lang = 'ko') {
+  const isEn = lang === 'en';
+  return {
+    name: 'return_detection_result',
+    description: 'AI 생성 확률 판정 결과를 반환한다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        probability: { type: 'number', description: '0~100 사이 AI 생성 확률' },
+        summary: {
+          type: 'string',
+          description: isEn
+            ? 'Core judgment reasoning in 1–2 sentences, written in English.'
+            : '핵심 판단 이유 1~2문장. 존댓말(~입니다/~합니다체)로 작성.'
+        },
+        detail: {
+          type: 'string',
+          description: isEn
+            ? 'Detailed analysis of 100+ characters, written in English.'
+            : '상세 분석 100자 이상. 존댓말(~입니다/~합니다체)로 작성.'
+        }
+      },
+      required: ['probability', 'summary', 'detail']
+    }
+  };
+}
 
 // Anthropic Messages 응답에서 tool_use 블록 추출
 // 강제 tool_choice 모드에서 모델은 항상 지정된 tool_use 블록을 반환한다.
@@ -314,11 +345,11 @@ function extractClaudeResult(data, toolName) {
 }
 
 // Anthropic tools는 표준 JSON Schema(input_schema)를 그대로 받음 → 변환 불필요
-function getDetectTool() {
-  return DETECT_TOOL;
+function getDetectTool(lang = 'ko') {
+  return buildDetectTool(lang);
 }
-function getHumanizeToolFor(mode) {
-  return buildHumanizeTool(mode);
+function getHumanizeToolFor(mode, lang = 'ko') {
+  return buildHumanizeTool(mode, lang);
 }
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
@@ -1132,7 +1163,7 @@ router.post('/analyze', async (req, res) => {
         ? `[앞 청크의 마지막 일부 — 문맥 참고용, 이 부분은 점수에 포함하지 말 것]\n${prevContext}\n\n[분석할 글]\n${text}`
         : `[분석할 글]\n${text}`;
       const detectSystem = getDetectSystem(lang);
-      const detectTool = getDetectTool();
+      const detectTool = getDetectTool(lang);
       const data = await callClaude({
         userText: detectUserContent,
         systemText: detectSystem,
@@ -1157,7 +1188,7 @@ router.post('/analyze', async (req, res) => {
       // ★ 휴머나이저: Claude Sonnet tool_use(강제)로 호출. 시스템 프롬프트는 그대로.
       const selectedMode = req.body.humanizeMode || 'assignment';
       const humanizeSystem = getHumanizeSystem(selectedMode, lang);
-      const humanizeTool = getHumanizeToolFor(selectedMode);
+      const humanizeTool = getHumanizeToolFor(selectedMode, lang);
       const prevContextBlock = prevContext
         ? `[앞 청크의 마지막 일부 — 문체 연속성 참고용, 다시 변환하지 말 것]\n${prevContext}\n\n`
         : '';
@@ -1275,7 +1306,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     const humanizeModePdf = req.body.humanizeMode || 'assignment';
     if (mode === 'detect') {
       const detectSystem = getDetectSystem(lang);
-      const detectTool = getDetectTool();
+      const detectTool = getDetectTool(lang);
       const data = await callClaude({
         userText: `[분석할 글]\n${text}`,
         systemText: detectSystem,
@@ -1289,7 +1320,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       usage = data.usage;
     } else {
       const humanizeSystem = getHumanizeSystem(humanizeModePdf, lang);
-      const humanizeTool = getHumanizeToolFor(humanizeModePdf);
+      const humanizeTool = getHumanizeToolFor(humanizeModePdf, lang);
       const data = await callClaude({
         userText: `[재작성할 텍스트]\n${text}`,
         systemText: humanizeSystem,
