@@ -785,7 +785,7 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
       || (result.evidenceWithoutInterpretation || 0) >= 1
       || (result.evidencePerParagraphMax || 0) >= 3
       || (result.noveltyInjectionCount || 0) >= 1
-      || (result.dominantHedgeCount || 0) >= 4;
+      || (result.dominantHedgeCount || 0) >= 6;   // 사용자 통과 글 실측 — "것 같습니다" 4~5회 박힌 채 0~14% 통과. 6회+만 시그너처.
   }
 
   const recomputedPass = !violations;
@@ -825,8 +825,8 @@ function shouldRefine(result, mode) {
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
     if ((result.questionSentenceCount || 0) === 0) minor++;
-    if ((result.dominantHedgeCount || 0) >= 3) minor++;        // 옛 critical ≥4 흡수
-    if ((result.firstPersonCount || 0) < 2) minor++;
+    if ((result.dominantHedgeCount || 0) >= 5) minor++;        // 통과 글 실측 4~5회 OK, 5회는 minor 경고
+    // firstPersonCount 게이트 폐기 — 통과 글 4건 실측에서 1인칭 0~1건 다수. 1인칭 강제는 잘못된 가설.
     if (typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.25) minor++;   // 옛 critical >0.35 흡수
     if (typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.20) minor++;   // 옛 critical >0.30 흡수
     // 강등된 항목 (critical → minor)
@@ -907,12 +907,10 @@ function collectFailedFields(r, mode) {
       const items = Array.isArray(r.noveltyInjectionItems) ? r.noveltyInjectionItems.join(', ') : '';
       failed.push(`입력 글에 없는 신규 사실 ${r.noveltyInjectionCount}건 주입 (절대 금지 직격): ${items} — 사용자 카피킬러 100% 감지 실측의 진범. 학습 데이터에서 끌어온 연도(YYYY)·통계(%)·기관명을 모두 제거하고, 해당 문장을 입력 글에 있는 추상 진술 + 글쓴이 관찰·판단으로 갈아끼워라. "유니레버/대한상공회의소" 같은 외래 고유명사 신규 주입도 금지.`);
     }
-    if ((r.dominantHedgeCount || 0) >= 3) {
-      failed.push(`동일 hedge 표현 "${r.dominantHedgeName || ''}" ${r.dominantHedgeCount}회 반복 — hedge 풀세트 다양화 효과 무력화로 "기계적 균일성" 시그너처 박힘 (카피킬러 피드백 직격). 같은 hedge는 글 전체에서 2회 이하로 제한하고, 나머지는 다른 형태(~던 것 같습니다 / ~지도 모릅니다 / ~기도 합니다 / ~지 않을까요?)로 분산. 단정 평서로 끝나도 무방.`);
+    if ((r.dominantHedgeCount || 0) >= 5) {
+      failed.push(`동일 hedge 표현 "${r.dominantHedgeName || ''}" ${r.dominantHedgeCount}회 반복 — 통과 글 실측 임계 4~5회. 6회 이상은 카피킬러 "기계적 균일성" 시그너처. 같은 hedge는 글 전체에서 5회 이하로 제한하고, 나머지는 다른 형태(~던 것 같습니다 / ~지도 모릅니다 / ~기도 합니다 / ~지 않을까요?)로 분산. 단정 평서로 끝나도 무방.`);
     }
-    if ((r.firstPersonCount || 0) < 2) {
-      failed.push(`1인칭 anchor ${r.firstPersonCount || 0}건 (목표 2건+) — 카피킬러 피드백 "글쓴이 관점 부재 / 간접·비인칭 서술 반복" 직격. "제가 ~ 보면서 / 저는 ~ 했을 때 / 저로서는 ~" 같은 1인칭 시점을 글 중간에 2개 이상 자연스럽게 배치. 단, "저는" 4회+ 반복은 금지.`);
-    }
+    // 1인칭 anchor 메시지 폐기 — 통과 글 실측에서 1인칭 0~1건 다수, 강제 X.
     if ((r.endingCommaCount || 0) >= 1) {
       failed.push(`연결어미 뒤 쉼표 ${r.endingCommaCount}건 — 한국어 휴머나이저 학술 SSOT 기준 KatFish 분리도 4.84배(인간 4.10% vs AI 19.83%). "~고, / ~며, / ~지만, / ~면서, / ~아서, / ~어서," 패턴은 한국어 AI 글의 가장 강한 단일 시그너처. 해당 쉼표를 빼고 자연스럽게 이어 쓰거나 마침표로 끊어라.`);
     }
