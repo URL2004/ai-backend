@@ -659,21 +659,9 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
       { re: /(일|사실|영향|결과|효과|일상|문제|역할)뿐아니라/, msg: '~뿐아니라→~뿐 아니라' },
       { re: /(빠질|할|볼|쓸|올|갈|줄|얻을|받을|만날|보낼|읽을)수\s/, msg: '~ㄹ수→~ㄹ 수' },
       // ㄹ수+있/없 결합형 (사용자 글 실측 — "꺼낼수있는/통할수있을지/버틸수없지만")
-      { re: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을|꺼낼|버틸|통할|이길|살아남을|벗어날|치를|배울|이해할|판단할|해결할|찾을|확인할)수(있|없|\s+있|\s+없)/, msg: '~ㄹ수+있/없→~ㄹ 수 있/없' },
+      { re: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을|꺼낼|버틸|통할|이길|살아남을|벗어날|치를|배울|이해할|판단할|해결할|찾을)수(있|없)/, msg: '~ㄹ수+있/없→~ㄹ 수 있/없' },
       // 의존명사 '데' (사용자 글 실측 — "갖추는데 있다")
-      { re: /(지키|만들|살|쓰|배우|찾|보|걸|구하|이해하|받아들이|판단하|결정하|해결하|갖추|버티|통하|이기|적응하|대응하|성장하|살아남)는데\s+(있|의의|의미|도움|기여|초점|중점|목적|이유|핵심|목표|관건|보탬|어려움|걸림돌)/, msg: '~는데 (의존명사)→~는 데' },
-      // 의존명사 '할' (사용자 글 — "지켜봐야할 / 해야할")
-      { re: /(지켜봐야|해야|가야|들어야|버려야|살아야|쉬어야|찾아야|그만둬야|해결해야|받아들여야|움직여야|준비해야|기억해야|배워야|이해해야|판단해야|결정해야|시도해야|꺼내야|만들어야|이끌어야)할(\s|$|[.,!?])/, msg: '~야할→~야 할' },
-      // 의존명사 '텐데' (사용자 글 — "될텐데")
-      { re: /(될|할|줄|볼|올|갈|받을|얻을|읽을|쓸|쥘|들을|보낼|만날|이길)텐데/, msg: '~ㄹ텐데→~ㄹ 텐데' },
-      // 부사 '더' + 어미 (사용자 글 — "더나은")
-      { re: /더(나은|큰|많은|좋은|빠른|쉬운|넓은|높은|길게)/, msg: '더+형용사→더 +형용사' },
-      // 조사 잘못 띄움 — "경영이 라는"
-      { re: /([가-힣]+)([은는이가])\s+(라는|라고|라며|라면|라도)/, msg: '조사+의존명사 잘못 띄움' },
-      // 조사 뒤 명사 붙어버림 — "요소들이지속"
-      { re: /(요소들|사람들|기업들|학생들|구성원들|구매자들|독자들|시청자들|관객들|회원들)이([가-힣]{2,})/, msg: '조사 뒤 명사 띄어쓰기' },
-      // 동사+보조용언 잘못 띄움 — "성공 하는건"
-      { re: /(성공|실패|시작|중단|완성|도전|적응|대응|기여|성장|발전|확장|축소|개선|악화|증가|감소|회복|침체)\s+(하는|한다|했|할|함|하기|하며|하고|해|해서)/, msg: '동사+보조용언 잘못 띄움' }
+      { re: /(지키|만들|살|쓰|배우|찾|보|걸|구하|이해하|받아들이|판단하|결정하|해결하|갖추|버티|통하|이기|적응하|대응하|성장하|살아남)는데\s+(있|의의|의미|도움|기여|초점|중점|목적|이유|핵심|목표|관건|보탬|어려움|걸림돌)/, msg: '~는데 (의존명사)→~는 데' }
     ];
     const spellIssues = spellingRules.filter(r => r.re.test(text)).map(r => r.msg);
     if (spellIssues.length > (result.spellingIssues?.length || 0)) {
@@ -810,7 +798,7 @@ function shouldRefine(result, mode) {
     || (mode === 'assignment' && (result.noveltyInjectionCount || 0) >= 1)
     || (mode === 'assignment' && (result.dominantHedgeCount || 0) >= 4)
     || (mode === 'assignment' && typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.35)
-    || (mode === 'assignment' && typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.25)
+    || (mode === 'assignment' && typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.30)
     || (mode === 'assignment' && typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.25)
     || !!result.lengthShortfall;
   if (critical) return { refine: true, reason: 'critical' };
@@ -870,7 +858,7 @@ function collectFailedFields(r, mode) {
       failed.push(`수동·비인칭 동사 ${(r.passiveVoiceRatio * 100).toFixed(0)}%(룰 7 수동태 회피, 목표 25% 이하) — 카피킬러 피드백 "수동태·비인칭 구조 중심 → 글쓴이 관점 부재" 직격. "여겨졌습니다 / 만들어집니다 / 뒤집혔습니다 / 정비되고 있고 / 이어지고 있습니다 / 평가받게 될" 같은 수동·중간태를 능동으로 전환. "기업이 ~을 한다 / 저는 ~을 본다 / 사람들은 ~을 고른다" 식의 명확한 주체+능동 동사로 절반 이상 교체.`);
     }
     if (typeof r.longSentenceRatio === 'number' && r.longSentenceRatio > 0.20) {
-      failed.push(`60자+ 장문 비율 ${(r.longSentenceRatio * 100).toFixed(0)}%(룰 2 문장 길이, 목표 20% 이하) — 카피킬러 피드백 "지나친 요약·압축 서술 → 문장 간 단절" 직격. 60자+ 문장은 글 전체에서 20% 이내로. 콤마로 절을 이어 60자+로 늘이지 말고, 마침표로 30~50자 독립 문장 2~3개로 분할.`);
+      failed.push(`60자+ 장문 비율 ${(r.longSentenceRatio * 100).toFixed(0)}%(룰 2 문장 길이, 목표 20% 이하) — 카피킬러 피드백 "지나친 요약·압축 서술 → 문장 간 단절" 직격. 60자+ 문장은 글 전체에서 25% 이내로. 콤마로 절을 이어 60자+로 늘이지 말고, 마침표로 30~50자 독립 문장 2~3개로 분할.`);
     }
     if ((r.sameEndingRun || 0) >= 3) {
       failed.push(`동일 종결어미 ${r.sameEndingRun}연속(룰 1 종결어미 다양화 — 4문장 연속 금지) — 3번째 문장을 변형 종결(~까요? / ~던 것 같습니다 / ~인지도 모릅니다 / ~기도 합니다)로 교체`);
@@ -957,27 +945,7 @@ const MECHANICAL_LEXICON = [
   { from: /(일|사실|영향|결과|효과|일상|문제|역할)뿐아니라/g, to: '$1뿐 아니라' },
   { from: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을)수\s/g, to: '$1 수 ' },
   // ㄹ수+있/없 결합형 (사용자 글 실측 — "꺼낼수있는/통할수있을지/버틸수없지만")
-  { from: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을|꺼낼|버틸|통할|이길|살아남을|벗어날|치를|드릴|배울|이해할|판단할|해결할|찾을|쓸)수(있|없)/g, to: '$1 수 $2' },
-  // ㄹ수+공백+있/없 (사용자 글 실측 — "버틸수 없지만 / 확인할수 있는")
-  { from: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을|꺼낼|버틸|통할|이길|살아남을|벗어날|치를|드릴|배울|이해할|판단할|해결할|찾을|확인할)수\s+(있|없)/g, to: '$1 수 $2' },
-  // 의존명사 '할' (사용자 글 — "지켜봐야할 / 해야할" 일반화)
-  { from: /(지켜봐야|해야|가야|들어야|버려야|살아야|쉬어야|찾아야|그만둬야|해결해야|받아들여야|움직여야|준비해야|기억해야|배워야|이해해야|판단해야|결정해야|시도해야|꺼내야|만들어야|이끌어야)할(\s|$|[.,!?])/g, to: '$1 할$2' },
-  // 의존명사 '텐데/터/리' 띄어쓰기 (사용자 글 — "될텐데")
-  { from: /(될|할|줄|볼|올|갈|받을|얻을|읽을|쓸|쥘|들을|보낼|만날|이길)텐데/g, to: '$1 텐데' },
-  { from: /(될|할|줄|볼|올|갈|받을|얻을|읽을|쓸|쥘|들을|보낼|만날|이길)터(이|에|로|라|입)/g, to: '$1 터$2' },
-  // 더 + 어미 띄어쓰기 (사용자 글 — "더나은")
-  { from: /더나은/g, to: '더 나은' },
-  { from: /더큰/g, to: '더 큰' },
-  { from: /더많은/g, to: '더 많은' },
-  { from: /더좋은/g, to: '더 좋은' },
-  // 조사 잘못 띄움 — "경영이 라는 / 사람이 라는 / 회사가 라는" (조사+의존명사 띄어쓰기 반대 오류)
-  { from: /([가-힣]+)([은는이가])\s+(라는|라고|라며|라면|라도)/g, to: '$1$2$3' },
-  // 조사 뒤 명사 붙어버림 (사용자 글 — "요소들이지속")
-  { from: /(요소들|사람들|기업들|학생들|구성원들|구매자들|독자들|시청자들|관객들|회원들)이([가-힣]{2,})/g, to: '$1이 $2' },
-  // 동사 어간 + 보조용언 잘못 띄움 — "성공 하는건"
-  { from: /(성공|실패|시작|중단|완성|도전|적응|대응|기여|성장|발전|확장|축소|개선|악화|증가|감소|회복|침체)\s+(하는|한다|했|할|함|하기|하며|하고|해|해서)/g, to: '$1$2' },
-  // "것같" 추가 케이스 (어미 변형 — 사용자 글에 잔존)
-  { from: /것같(았|을|음|아|어|던지|던것)/g, to: '것 같$1' }
+  { from: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을|꺼낼|버틸|통할|이길|살아남을|벗어날|치를|드릴|배울|이해할|판단할|해결할|찾을|쓸)수(있|없)/g, to: '$1 수 $2' }
 ];
 
 function enforceMechanicalRules(text) {
@@ -1276,7 +1244,7 @@ router.post('/analyze', async (req, res) => {
         userText: userContent,
         systemText: humanizeSystem,
         tool: humanizeTool,
-        temperature: 0.7,
+        temperature: 0.5,
         maxOutputTokens: 16384
       });
       result = extractClaudeResult(data, humanizeTool.name);
@@ -1290,12 +1258,12 @@ router.post('/analyze', async (req, res) => {
       if (refineDecision.refine) {
         const failed = collectFailedFields(result, selectedMode);
         console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
-        const refineUser = `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${text}\n\n[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 문장은 **통째로 폐기**하고 위반 없는 새 문장으로 대체하라. 단어 한두 개만 바꾸는 "최소 수정"은 시그너처 패턴이 그대로 박혀있어 카피킬러가 똑같이 잡아낸다. 위반 없는 문장은 *건드리지 마라*. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형을 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
+        const refineUser = `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${text}\n\n[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형을 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 수정 후 체크리스트 수치를 실제로 다시 세서 채워라.`;
         const refineData = await callClaude({
           userText: refineUser,
           systemText: humanizeSystem,
           tool: humanizeTool,
-          temperature: 0.7,
+          temperature: 0.5,
           maxOutputTokens: 16384
         });
         result = extractClaudeResult(refineData, humanizeTool.name);
@@ -1399,7 +1367,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
         userText: `[재작성할 텍스트]\n${text}`,
         systemText: humanizeSystem,
         tool: humanizeTool,
-        temperature: 0.7,
+        temperature: 0.5,
         maxOutputTokens: 16384
       });
       result = extractClaudeResult(data, humanizeTool.name);
