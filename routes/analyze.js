@@ -147,7 +147,7 @@ function buildHumanizeTool(mode, lang = 'ko') {
       type: 'string',
       description: isEn
         ? "Mandatory pre-writing plan, written in English. State 1 sentence each for: (1) List every statistic, year, proper noun, and organization name from the input — mark which ones will be kept verbatim, and declare that NO new statistics/years/proper nouns will be introduced. (2) Declare that the example text's vocabulary will NOT be copied; only its tone, structure, and hedge distribution will be imitated. (3) Identify the 3 rules from the system prompt most at risk of being violated for this specific text. (4) If the original follows a stock frame, state the rearrangement direction. (5) **Natural flow first**: declare that information will NOT be compressed into one sentence; natural connectors (so / but / however / in practice / honestly / in the end) will be used between sentences to keep flow smooth. Rule satisfaction must not create a disjointed feel. 5–7 sentences."
-        : '글 작성 전 필수 적용 계획. 다음 5개 항목을 1문장씩 명시: (1) 입력 글에 등장한 통계·연도·고유명사·기관명을 모두 나열하고, 출력에서 그대로 유지할 항목만 표시. 입력에 없는 새 통계·연도·고유명사는 절대 추가하지 않는다고 선언. (2) 위 예시 글의 어휘를 그대로 베끼지 않고 톤·구조·hedge 분포만 모방한다고 선언. (3) 시스템 프롬프트의 P0과 룰 1~12 중 이 글에 가장 위험한 룰 3개 식별. (4) 원문 흐름이 전형 프레임이면 재배치 방향. (5) **자연 흐름 우선**: 정보를 한 문장에 압축하지 않고, 문장 사이를 자연 연결 어구(그래서/그런데/다만/물론/결국)로 매끄럽게 잇는다고 선언. 룰 충족이 단절감을 만들면 안 됨. 5~7문장.'
+        : '글 작성 전 필수 적용 계획. 다음 5개 항목을 1문장씩 명시: (1) 입력 글에 등장한 통계·연도·고유명사·기관명을 모두 나열하고, 출력에서 그대로 유지할 항목만 표시. 입력에 없는 새 통계·연도·고유명사는 절대 추가하지 않는다고 선언. (2) 위 예시 글의 어휘를 그대로 베끼지 않고 톤·구조·hedge 분포만 모방한다고 선언. (3) 시스템 프롬프트의 P0과 룰 1~5 중 이 글에 가장 위험한 룰 3개 식별. (4) 원문 흐름이 전형 프레임이면 재배치 방향. (5) **자연 흐름 우선**: 정보를 한 문장에 압축하지 않고, 문장 사이를 자연 연결 어구(그래서/그런데/다만/물론/결국)로 매끄럽게 잇는다고 선언. 룰 충족이 단절감을 만들면 안 됨. 5~7문장.'
     },
     outputText: {
       type: 'string',
@@ -202,27 +202,19 @@ function buildHumanizeTool(mode, lang = 'ko') {
   if (mode === 'assignment') {
     baseProperties.questionSentenceCount = {
       type: 'integer',
-      description: '의문문("?"로 끝) 개수. 1~3건 권장 (룰 1 변형 종결 ~까요? + 룰 6 의문문 보조 0~1회 정합). 0건도 위반 아님.'
-    };
-    baseProperties.conjunctionStartRatio = {
-      type: 'number',
-      description: '접속사/전환어구(따라서/그러므로/결국/결론적으로/이를 위해/이런 흐름 속에서/한편/또한/그런데/그래서/사실 등)로 시작하는 문장 수 / 전체 문장. 0.15 이하 (룰 3 사고흐름 표지 — 권장하지만 남발 금지)'
+      description: '의문문("?"로 끝) 개수. 1~3건 권장 (룰 1 변형 종결 ~까요? + hedge 풀세트 의문문 분산 정합). 0건도 위반 아님.'
     };
     baseProperties.lastSentenceIsReassurance = {
       type: 'boolean',
-      description: '마지막 문장이 재보증/요약/평가 패턴("~할 필요가 있다","~에 달려 있다","~얘기다","정리하자면","결론적으로","알게 됩니다","깨닫게 됩니다")이면 true. false여야 통과 (P3)'
-    };
-    baseProperties.paragraphLengthRatio = {
-      type: 'number',
-      description: '(가장 긴 문단의 문장 수) / (가장 짧은 문단의 문장 수). 2 이상 (룰 10 문단 자연 분리). 문단이 1개면 -1로 보고하여 검증 skip'
+      description: '마지막 문장이 재보증/요약/평가 패턴("~할 필요가 있다","~에 달려 있다","~얘기다","정리하자면","결론적으로","알게 됩니다","깨닫게 됩니다")이면 true. false여야 통과 (룰 1 hedge 마무리)'
     };
     baseProperties.commaClauseRatio = {
       type: 'number',
-      description: '쉼표 포함 + 종결/연결어미(다/니다/며/고/어서/아서/면서/는데/지만 등)가 2개 이상인 문장 / 전체. 0.20 이하 (룰 4 콤마 절제 — KatFishNet 측정 한국어 LLM은 인간보다 콤마 2.3배 사용). 서버 실측으로 덮어씀.'
+      description: '쉼표 포함 + 종결/연결어미(다/니다/며/고/어서/아서/면서/는데/지만 등)가 2개 이상인 문장 / 전체. 0.20 이하 (룰 3 콤마 절제 — KatFishNet 측정 한국어 LLM은 인간보다 콤마 2.3배 사용). 서버 실측으로 덮어씀.'
     };
     baseProperties.shortRunWithoutComma = {
       type: 'integer',
-      description: '쉼표 없는 평서문 3연속 구간 개수. 룰 4 콤마 절제 정합 — 정보용 측정, 강제 임계 없음. 서버 실측으로 덮어씀.'
+      description: '쉼표 없는 평서문 3연속 구간 개수. 룰 3 콤마 절제 정합 — 정보용 측정, 강제 임계 없음. 서버 실측으로 덮어씀.'
     };
     baseProperties.tinySentenceCount = {
       type: 'integer',
@@ -257,18 +249,14 @@ function buildHumanizeTool(mode, lang = 'ko') {
       type: 'integer',
       description: '한 단락 안에 등장하는 사례 인용 최대 개수. 2 이하 (절대 금지 1항 안전망). 서버 실측으로 덮어씀.'
     };
-    baseProperties.topicFocusRatio = {
-      type: 'number',
-      description: '입력이 다항목 주제(ESG의 E/S/G, N분야 등)일 때 가장 비중 큰 sub-topic의 분량 비율(0~1). 0.5 이상 (룰 11 균등 전개 금지). 다항목 아니면 -1로 보고하여 검증 skip.'
-    };
     baseRequired.push(
-      'questionSentenceCount', 'conjunctionStartRatio',
-      'lastSentenceIsReassurance', 'paragraphLengthRatio',
+      'questionSentenceCount',
+      'lastSentenceIsReassurance',
       'commaClauseRatio', 'shortRunWithoutComma',
       'tinySentenceCount', 'longShortAdjacencyCount',
       'sameEndingRun', 'similarLengthRun', 'spellingIssues',
       'evidenceCount', 'evidenceWithoutInterpretation',
-      'evidencePerParagraphMax', 'topicFocusRatio'
+      'evidencePerParagraphMax'
     );
   }
 
@@ -410,16 +398,6 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       result.questionSentenceCount = actualQuestions;
     }
 
-    // 수사적 의문문 카운트 — 룰 6 강행 규정 "수사적 의문문 0회"
-    // LLM이 negative instruction 못 따르는 한계 보완. 0보다 크면 critical violation.
-    const rhetoricalRe = /(까요|일까요|이지\s*않을까요|않을까요|아닐까요|아닐지요|이지\s*않은가요|그럴까요|과장일까요|아닐까)\?/g;
-    const rhetoricalMatches = text.match(rhetoricalRe) || [];
-    const actualRhetorical = rhetoricalMatches.length;
-    if (actualRhetorical !== (result.rhetoricalQuestionCount || 0)) {
-      overrides.push(`rhetoricalQuestionCount ${result.rhetoricalQuestionCount} → ${actualRhetorical}`);
-      result.rhetoricalQuestionCount = actualRhetorical;
-    }
-
     // 단정 정의문 카운트 — LLM overconfidence 시그너처 (학술 근거: arxiv 2510.26995, MASH 2601.08564)
     // 사용자 카피킬러 87% 감지 실측 분석: "[고유명사]는 ~사례입니다 / ~증거입니다 / ~보여줍니다" 패턴이 디텍터에 직접 잡힘.
     // 룰 5(무생물 정의문 회피)를 모델이 안 지키므로 측정→refine으로 강제.
@@ -431,16 +409,7 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       result.declarativeDefinitionCount = actualDeclarativeDefinition;
     }
 
-    // 접속사/전환어구 시작 실측
-    const connectorRe = /^(따라서|그러므로|즉|결국|결론적으로|궁극적으로|이를 위해|이런 흐름 속에서|이러한|한편|또한|게다가|그런데|그래서|사실|물론|그렇다고|하지만|반면|반면에|아울러)\b/;
-    const connectorStarts = sentences.filter(s => connectorRe.test(s)).length;
-    const actualConjRatio = sentences.length > 0 ? connectorStarts / sentences.length : 0;
-    if (actualConjRatio > (result.conjunctionStartRatio || 0)) {
-      overrides.push(`conjunctionStartRatio ${(result.conjunctionStartRatio || 0).toFixed(2)} → ${actualConjRatio.toFixed(2)}`);
-      result.conjunctionStartRatio = actualConjRatio;
-    }
-
-    // P3 마지막 문장 재보증/평가 패턴 실측 (교훈형 일반화 마무리 포함)
+    // 룰 1 마지막 문장 재보증/평가 패턴 실측 (교훈형 일반화 마무리 포함)
     const lastSentence = sentences[sentences.length - 1] || '';
     const reassureRe = new RegExp([
       '필요가 있다',
@@ -482,26 +451,10 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       result.topNounCounts = newCounts;
     }
 
-    // 문단 비율 실측: \n{2,}로 문단 분리 후 문장 수 기준 max/min
+    // 문단 분리: 후속 룰(룰 2 similarLengthRun 등)에서 재사용
     const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
-    if (paragraphs.length >= 2) {
-      const sentCounts = paragraphs.map(p => {
-        const ps = p.split(/(?<=[.!?？。])\s+|\n+/).map(s => s.trim()).filter(Boolean);
-        return ps.length || 1;
-      });
-      const maxS = Math.max(...sentCounts);
-      const minS = Math.min(...sentCounts);
-      const actualRatio = minS > 0 ? maxS / minS : 1;
-      if (actualRatio < (result.paragraphLengthRatio || Infinity)) {
-        overrides.push(`paragraphLengthRatio ${result.paragraphLengthRatio} → ${actualRatio.toFixed(2)}`);
-        result.paragraphLengthRatio = actualRatio;
-      }
-    } else if (result.paragraphLengthRatio !== -1) {
-      // 문단 1개면 검증 skip sentinel
-      result.paragraphLengthRatio = -1;
-    }
 
-    // 문단 수 일치 실측: 입력 문단 수 vs 출력 문단 수
+    // 문단 수 일치 실측: 입력 문단 수 vs 출력 문단 수 (작업 지침 — 원문 문단 수 보존)
     if (typeof inputParaCount === 'number' && inputParaCount > 1) {
       const outputParas = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
       if (outputParas.length !== inputParaCount) {
@@ -713,29 +666,20 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
 
   if (mode === 'assignment') {
     violations = violations
-      || (typeof result.conjunctionStartRatio === 'number' && result.conjunctionStartRatio > 0.15)
       || result.lastSentenceIsReassurance === true
-      // rhetoricalQuestionCount > 0 위반 폐기 (사용자 0% AFTER 실측: 수사적 의문문 2건 정상)
-      // hedge·rhetorical은 한국어 카피킬러에서 인간 시그너처. 우리 룰 6 가정이 정면 반대였음.
       || (result.declarativeDefinitionCount || 0) >= 3
       || (result.evidenceCount || 0) >= 4
-      || (typeof result.paragraphLengthRatio === 'number'
-          && result.paragraphLengthRatio >= 0
-          && result.paragraphLengthRatio < 2)
       || !!result.paragraphCountMismatch
       || (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.20)
       // shortRunWithoutComma·tinySentenceCount·longShortAdjacencyCount 위반 폐기.
-      // 룰 2 갱신(평균 40~55자, 단문 20~30자) + 룰 4 갱신(콤마 절제)과 충돌.
+      // 룰 2(평균 40~55자, 단문 20~30자) + 룰 3(콤마 절제)과 충돌.
       // 단문 강제는 룰 2 단문 *제한* 방향과 정면 반대.
       || (result.sameEndingRun || 0) >= 3
       || (result.similarLengthRun || 0) >= 3
       || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
       || !!result.lengthShortfall
       || (result.evidenceWithoutInterpretation || 0) >= 1
-      || (result.evidencePerParagraphMax || 0) >= 3
-      || (typeof result.topicFocusRatio === 'number'
-          && result.topicFocusRatio >= 0
-          && result.topicFocusRatio < 0.5);
+      || (result.evidencePerParagraphMax || 0) >= 3;
   }
 
   const recomputedPass = !violations;
@@ -760,7 +704,6 @@ function shouldRefine(result, mode) {
     || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
     || (mode === 'assignment' && !!result.paragraphCountMismatch)
     || (mode === 'assignment' && result.lastSentenceIsReassurance === true)
-    // rhetoricalQuestionCount > 0 critical 폐기 (사용자 0% AFTER 실측: 2건 정상)
     || (mode === 'assignment' && (result.declarativeDefinitionCount || 0) >= 3)
     || (mode === 'assignment' && (result.evidenceCount || 0) >= 4)
     || (mode === 'assignment' && (result.evidenceWithoutInterpretation || 0) >= 1)
@@ -773,11 +716,9 @@ function shouldRefine(result, mode) {
   if (typeof result.hedgeRatio === 'number' && (result.hedgeRatio < 0.07 || result.hedgeRatio > 0.22)) minor++;
   if ((result.consecutiveNounSubjectMax || 0) >= 4) minor++;
   if (mode === 'assignment') {
-    if (typeof result.conjunctionStartRatio === 'number' && result.conjunctionStartRatio > 0.20) minor++;
     if (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.30) minor++;
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
-    if (typeof result.topicFocusRatio === 'number' && result.topicFocusRatio >= 0 && result.topicFocusRatio < 0.4) minor++;
     // evidenceCount >= 4 는 critical로 격상됨(O2). minor 트리거에선 제거.
     if ((result.questionSentenceCount || 0) === 0) minor++;
   }
@@ -789,44 +730,33 @@ function collectFailedFields(r, mode) {
   const failed = [];
   if (r.topNounCounts && Object.values(r.topNounCounts).some(n => n >= 4)) {
     const over = Object.entries(r.topNounCounts).filter(([, n]) => n >= 4).map(([k, n]) => `"${k}" ${n}회`).join(', ');
-    failed.push(`주제어 4회 이상 반복(룰 7 어휘 다양화): ${over} — 지시어/유의어로 교체`);
+    failed.push(`주제어 4회 이상 반복(룰 5 어휘 다양화): ${over} — 지시어/유의어로 교체`);
   }
   if (r.listOfThreeCount >= 1) {
-    failed.push(`3개 이상 나열 ${r.listOfThreeCount}건(룰 4 콤마 절 누적 금지, AI 시그너처) — 별도 문장으로 분리하거나 "A부터 C까지" 같은 구간 표현으로`);
+    failed.push(`3개 이상 나열 ${r.listOfThreeCount}건(룰 3 콤마 절 누적 금지, AI 시그너처) — 별도 문장으로 분리하거나 "A부터 C까지" 같은 구간 표현으로`);
   }
   if (r.lengthShortfall) {
     const pct = (r.lengthShortfall.ratio * 100).toFixed(0);
     failed.push(`분량 부족 ${pct}% (원문 ${r.lengthShortfall.input}자 → 출력 ${r.lengthShortfall.output}자, 최소 90% 보장) — 빠뜨린 원문 디테일·예시·근거를 복원해서 분량을 늘려라. 압축·요약 금지.`);
   }
   if (r.consecutiveNounSubjectMax >= 3) {
-    failed.push(`명사 주어 ${r.consecutiveNounSubjectMax}연속(룰 3 비명사 시작) — 중간 문장을 부사/접속사/지시어로 시작`);
+    failed.push(`명사 주어 ${r.consecutiveNounSubjectMax}연속 — 중간 문장을 부사/접속사/지시어로 시작`);
   }
   if (typeof r.hedgeRatio === 'number' && (r.hedgeRatio < 0.10 || r.hedgeRatio > 0.20)) {
-    failed.push(`추정 어미 비율 ${(r.hedgeRatio * 100).toFixed(0)}%(룰 6 hedge 풀세트, 인간 분포 10~20%) — 자연스러운 분량으로 조정. hedge는 인간 시그너처라 너무 낮으면 LLM처럼 단정적, 너무 높으면 과교정.`);
+    failed.push(`추정 어미 비율 ${(r.hedgeRatio * 100).toFixed(0)}%(룰 1 hedge 풀세트, 인간 분포 10~20%) — 자연스러운 분량으로 조정. hedge는 인간 시그너처라 너무 낮으면 LLM처럼 단정적, 너무 높으면 과교정.`);
   }
   if (mode === 'assignment') {
-    if (typeof r.conjunctionStartRatio === 'number' && r.conjunctionStartRatio > 0.15) {
-      failed.push(`접속사/전환어구 시작 ${(r.conjunctionStartRatio * 100).toFixed(0)}%(룰 3 사고흐름 표지 — 권장하지만 남발 금지, 목표 15% 이하) — '따라서/그러므로/결론적으로' 같은 학술적 접속사 시작을 줄이고 본문 중간 부사·지시어로 분산`);
-    }
     if (r.lastSentenceIsReassurance === true) {
-      failed.push(`마지막 문장이 재보증/평가(P3 위반) — '~할 필요가 있다/~에 달려 있다/~지속가능한지는' 대신 구체 사례·미해결 질문·관찰로 닫아라`);
-    }
-    if ((r.rhetoricalQuestionCount || 0) > 0) {
-      failed.push(`수사적 의문문 ${r.rhetoricalQuestionCount}건 — 룰 6 강행 규정 "수사적 의문문 글 전체 0회" 위반. '~까요?', '~지 않을까요?', '과장일까요?' 같은 자기 의견 회피 의문문은 모두 단정문으로 교체. 예: '과장일까요?' → '과장된 해석은 아닙니다.' / '~지 않을까요?' → '~지 않습니다.'`);
+      failed.push(`마지막 문장이 재보증/평가(룰 1 hedge 마무리 위반) — '~할 필요가 있다/~에 달려 있다/~지속가능한지는' 대신 구체 사례·미해결 질문·관찰로 닫아라`);
     }
     if ((r.questionSentenceCount || 0) === 0) {
-      failed.push(`의문문 0건(룰 1 변형 종결 권장 — 1~3건 자연 배치) — 정보를 진짜로 묻는 의문문(룰 6 보조 규정) 1건 정도 추가. 수사적 의문문은 사용 가능(인간 시그너처)`);
-    }
-    if (typeof r.paragraphLengthRatio === 'number'
-        && r.paragraphLengthRatio >= 0
-        && r.paragraphLengthRatio < 2) {
-      failed.push(`문단 길이 비대칭 부족 (비율 ${r.paragraphLengthRatio.toFixed(2)}, 룰 10 문단 자연 분리, 목표 1:2 이상) — 짧은 문단(2~3문장)은 더 짧게, 긴 문단(4~6문장)은 더 길게 차이를 벌려라. 단 1~2문장 문단 연속은 끊김 — 자연 흐름 우선`);
+      failed.push(`의문문 0건(룰 1 변형 종결 권장 — 1~3건 자연 배치) — 정보를 진짜로 묻는 의문문 또는 hedge 의문문(~지 않을까요?, 정말 그럴까요?) 1건 정도 추가. 수사적 의문문은 사용 가능(인간 시그너처)`);
     }
     if (r.paragraphCountMismatch) {
       failed.push(`문단 수 불일치: 입력 ${r.paragraphCountMismatch.input}문단 → 출력 ${r.paragraphCountMismatch.output}문단. 원문의 문단 수를 그대로 유지하라. \\n\\n을 추가/삭제하지 말 것.`);
     }
     if (typeof r.commaClauseRatio === 'number' && r.commaClauseRatio > 0.20) {
-      failed.push(`쉼표 복문 비율 ${(r.commaClauseRatio * 100).toFixed(0)}%(룰 4 콤마 절제, 목표 20% 이하 — KatFishNet 측정 한국어 LLM 시그너처 직격) — 쉼표로 이어붙인 긴 문장을 마침표로 끊어 독립 문장으로 재배치. 한 문장 콤마 1개 이하 권장.`);
+      failed.push(`쉼표 복문 비율 ${(r.commaClauseRatio * 100).toFixed(0)}%(룰 3 콤마 절제, 목표 20% 이하 — KatFishNet 측정 한국어 LLM 시그너처 직격) — 쉼표로 이어붙인 긴 문장을 마침표로 끊어 독립 문장으로 재배치. 한 문장 콤마 1개 이하 권장.`);
     }
     if ((r.sameEndingRun || 0) >= 3) {
       failed.push(`동일 종결어미 ${r.sameEndingRun}연속(룰 1 종결어미 다양화 — 4문장 연속 금지) — 3번째 문장을 변형 종결(~까요? / ~던 것 같습니다 / ~인지도 모릅니다 / ~기도 합니다)로 교체`);
@@ -843,11 +773,8 @@ function collectFailedFields(r, mode) {
     if ((r.evidencePerParagraphMax || 0) >= 3) {
       failed.push(`한 단락에 사례 ${r.evidencePerParagraphMax}건 누적(절대 금지 1항 안전망, 최대 2건) — 입력에 없는 사례는 모두 제거. 입력 사례라도 한 단락에 1~2개까지만 두고, 직후에 글쓴이 해석을 붙여라.`);
     }
-    if (typeof r.topicFocusRatio === 'number' && r.topicFocusRatio >= 0 && r.topicFocusRatio < 0.5) {
-      failed.push(`다항목 주제를 균등 분배(최대 비중 ${(r.topicFocusRatio * 100).toFixed(0)}%, 룰 11 균등 전개 금지, 목표 50%+) — 1~2개 항목만 깊이 풀고 나머지는 1문장 이하로 압축하거나 생략. 모든 항목을 같은 패턴(정의→사례→평가)으로 풀지 마라.`);
-    }
     if ((r.declarativeDefinitionCount || 0) >= 3) {
-      failed.push(`단정 정의문 ${r.declarativeDefinitionCount}건 — LLM overconfidence 시그너처 직격(학술 근거: arxiv 2510.26995 LLM 84.3% overconfident, MASH 2601.08564 ASR 92%). "[고유명사]는 ~사례입니다 / ~증거입니다 / ~보여줍니다 / ~상징입니다" 같은 confident declarative 패턴이 카피킬러에 직접 잡힘. 룰 5 인용: "무생물 정의문 시작 금지. 대신 '~를 보면 / ~ 앞에 서면 / ~ 한 채에도' 같은 관찰·능동 시작으로 변환." 절반 이상을 관찰형으로 교체. 예: "엠파이어스테이트 빌딩은 그 시대 기술력의 사례입니다" → "엠파이어스테이트 빌딩을 보면 그 시대 기술력이 한눈에 들어옵니다".`);
+      failed.push(`단정 정의문 ${r.declarativeDefinitionCount}건(룰 4 고유명사+사실 단정 금지) — LLM overconfidence 시그너처 직격(학술 근거: arxiv 2510.26995 LLM 84.3% overconfident, MASH 2601.08564 ASR 92%). "[고유명사]는 ~사례입니다 / ~증거입니다 / ~보여줍니다 / ~상징입니다" 같은 confident declarative 패턴이 카피킬러에 직접 잡힘. 대신 "'~를 보면 / ~ 앞에 서면 / ~ 한 채에도" 같은 관찰·능동 시작으로 절반 이상 교체. 예: "엠파이어스테이트 빌딩은 그 시대 기술력의 사례입니다" → "엠파이어스테이트 빌딩을 보면 그 시대 기술력이 한눈에 들어옵니다".`);
     }
     if ((r.evidenceCount || 0) >= 4) {
       failed.push(`전체 사례 인용 ${r.evidenceCount}건(절대 금지 1항 critical, 권장 0~2건) — 사용자 카피킬러 87% 감지 실측: 사례·정량 사실이 한 글에 4건 이상 누적되면 LLM overconfidence 시그너처로 직접 잡힘. 입력 글에 없는 연도·기관명·통계는 모두 제거. 입력 사례는 추상 진술과 글쓴이 판단으로 갈아끼우고, 꼭 필요한 한두 개만 남겨라.`);
