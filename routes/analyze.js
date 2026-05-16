@@ -784,23 +784,17 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
 
 // 2-pass refine 게이트: critical 위반 1건이거나 minor 위반이 5건 이상일 때만 재호출.
 // minor refine이 자주 발동하면 모델이 "룰 더 충족하는 방향"으로 다듬어 정형성이 짙어진다 → 임계 완화.
+// ★ critical은 7개로 슬림화 — 게이트 다수가 critical이면 refine이 거의 매번 발동돼서
+//   모델이 같은 글을 반복 다듬다 정형성 누적. 진짜 직격(P0/P1 안전망/분량/구조)만 critical.
 function shouldRefine(result, mode) {
   const critical =
-    (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4))
-    || (result.listOfThreeCount || 0) >= 1
-    || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
-    || (mode === 'assignment' && !!result.paragraphCountMismatch)
-    || (mode === 'assignment' && result.lastSentenceIsReassurance === true)
-    || (mode === 'assignment' && (result.declarativeDefinitionCount || 0) >= 3)
-    || (mode === 'assignment' && (result.evidenceCount || 0) >= 4)
-    || (mode === 'assignment' && (result.evidenceWithoutInterpretation || 0) >= 1)
-    || (mode === 'assignment' && (result.evidencePerParagraphMax || 0) >= 3)
-    || (mode === 'assignment' && (result.noveltyInjectionCount || 0) >= 1)
-    || (mode === 'assignment' && (result.dominantHedgeCount || 0) >= 4)
-    || (mode === 'assignment' && typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.35)
-    || (mode === 'assignment' && typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.30)
-    || (mode === 'assignment' && typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.25)
-    || !!result.lengthShortfall;
+    (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4))    // 어휘 반복
+    || (result.listOfThreeCount || 0) >= 1                                              // 콤마 3+ 나열
+    || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)        // P0 맞춤법
+    || !!result.lengthShortfall                                                          // 분량 90% 미달
+    || (mode === 'assignment' && !!result.paragraphCountMismatch)                        // 문단 수 불일치
+    || (mode === 'assignment' && (result.evidenceWithoutInterpretation || 0) >= 1)       // 사례 직후 해석 누락
+    || (mode === 'assignment' && typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.25); // 콤마+절 누적 25%+
   if (critical) return { refine: true, reason: 'critical' };
 
   let minor = 0;
@@ -811,12 +805,17 @@ function shouldRefine(result, mode) {
     if (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.20) minor++;
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
-    // evidenceCount >= 4 는 critical로 격상됨(O2). minor 트리거에선 제거.
     if ((result.questionSentenceCount || 0) === 0) minor++;
-    if ((result.dominantHedgeCount || 0) === 3) minor++;
+    if ((result.dominantHedgeCount || 0) >= 3) minor++;        // 옛 critical ≥4 흡수
     if ((result.firstPersonCount || 0) < 2) minor++;
-    if (typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.25) minor++;
-    if (typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.20) minor++;
+    if (typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.25) minor++;   // 옛 critical >0.35 흡수
+    if (typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.20) minor++;   // 옛 critical >0.30 흡수
+    // 강등된 항목 (critical → minor)
+    if (result.lastSentenceIsReassurance === true) minor++;
+    if ((result.declarativeDefinitionCount || 0) >= 3) minor++;
+    if ((result.evidenceCount || 0) >= 4) minor++;
+    if ((result.evidencePerParagraphMax || 0) >= 3) minor++;
+    if ((result.noveltyInjectionCount || 0) >= 1) minor++;
   }
   return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
 }
