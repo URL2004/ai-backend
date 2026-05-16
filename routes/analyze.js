@@ -707,25 +707,6 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
       result.evidencePerParagraphMax = evidencePerParaMax;
     }
 
-    // ===== C-11: 연결어미 뒤 쉼표 잔존 검출 (학술 SSOT — KatFish 인간 4.10% vs AI 19.83%) =====
-    // enforceMechanicalRules의 deterministic 치환 사각지대 모니터링용.
-    const endingCommaRe = /(고|며|지만|면서|아서|어서)\s*,/g;
-    const endingCommaMatches = text.match(endingCommaRe) || [];
-    result.endingCommaCount = endingCommaMatches.length;
-
-    // ===== 결산 lexicon 4종 누적 (LREAD 인간 판독 60→90% 핵심 항목) =====
-    // "결론적으로 / 따라서 / 이를 통해 / 그러므로" — 한 글 2회 초과 시 결산 정형성.
-    const conclusionLex = ['결론적으로', '따라서', '이를 통해', '그러므로'];
-    let pivotCount = 0;
-    const pivotHits = [];
-    for (const w of conclusionLex) {
-      const cnt = (text.match(new RegExp(w, 'g')) || []).length;
-      if (cnt > 0) pivotHits.push(`${w}×${cnt}`);
-      pivotCount += cnt;
-    }
-    result.conclusionPivotCount = pivotCount;
-    result.conclusionPivotHits = pivotHits;
-
     // ===== 절대 금지 핵심: 입력에 없는 신규 사실 주입 직접 차집합 =====
     // 사용자 카피킬러 100% 감지 실측 — LLM이 학습 데이터에서 연도·통계·기관명을 끌어와 박는 게 진범.
     // evidenceCount 누적만으론 "입력에 원래 있었던 사례"와 "신규 주입"을 구분 못 함 → 입력과 직접 비교.
@@ -758,8 +739,8 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
   }
 
   // 임계 기준으로 selfCheckPass 재계산. shouldRefine 임계와 정렬해 "달성 가능한 게이트"로 작동.
-  // topNounCounts ≥4 폐기 — 통과 글 D(0%)에 주제어 반복 있어도 통과. false signal.
   let violations =
+    (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4)) ||
     result.listOfThreeCount >= 1 ||
     result.consecutiveNounSubjectMax >= 4;  // 폐기한 옛 룰 3 잔재 정리, shouldRefine과 일치
     // shortSentenceRatio 위반 폐기 — 룰 2 갱신(평균 40~55자, 단문 *제한*)과 정면 충돌.
@@ -785,7 +766,7 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
       || (result.evidenceWithoutInterpretation || 0) >= 1
       || (result.evidencePerParagraphMax || 0) >= 3
       || (result.noveltyInjectionCount || 0) >= 1
-      || (result.dominantHedgeCount || 0) >= 6;   // 사용자 통과 글 실측 — "것 같습니다" 4~5회 박힌 채 0~14% 통과. 6회+만 시그너처.
+      || (result.dominantHedgeCount || 0) >= 4;
   }
 
   const recomputedPass = !violations;
@@ -803,17 +784,23 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
 
 // 2-pass refine 게이트: critical 위반 1건이거나 minor 위반이 5건 이상일 때만 재호출.
 // minor refine이 자주 발동하면 모델이 "룰 더 충족하는 방향"으로 다듬어 정형성이 짙어진다 → 임계 완화.
-// ★ critical은 7개로 슬림화 — 게이트 다수가 critical이면 refine이 거의 매번 발동돼서
-//   모델이 같은 글을 반복 다듬다 정형성 누적. 진짜 직격(P0/P1 안전망/분량/구조)만 critical.
 function shouldRefine(result, mode) {
-  // topNounCounts ≥4 critical 폐기 — 통과 글 D(0%)에 주제어 반복 있음. false signal.
   const critical =
-    (result.listOfThreeCount || 0) >= 1                                              // 콤마 3+ 나열
-    || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)        // P0 맞춤법
-    || !!result.lengthShortfall                                                          // 분량 90% 미달
-    || (mode === 'assignment' && !!result.paragraphCountMismatch)                        // 문단 수 불일치
-    || (mode === 'assignment' && (result.evidenceWithoutInterpretation || 0) >= 1)       // 사례 직후 해석 누락
-    || (mode === 'assignment' && typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.25); // 콤마+절 누적 25%+
+    (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4))
+    || (result.listOfThreeCount || 0) >= 1
+    || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
+    || (mode === 'assignment' && !!result.paragraphCountMismatch)
+    || (mode === 'assignment' && result.lastSentenceIsReassurance === true)
+    || (mode === 'assignment' && (result.declarativeDefinitionCount || 0) >= 3)
+    || (mode === 'assignment' && (result.evidenceCount || 0) >= 4)
+    || (mode === 'assignment' && (result.evidenceWithoutInterpretation || 0) >= 1)
+    || (mode === 'assignment' && (result.evidencePerParagraphMax || 0) >= 3)
+    || (mode === 'assignment' && (result.noveltyInjectionCount || 0) >= 1)
+    || (mode === 'assignment' && (result.dominantHedgeCount || 0) >= 4)
+    || (mode === 'assignment' && typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.35)
+    || (mode === 'assignment' && typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.30)
+    || (mode === 'assignment' && typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.25)
+    || !!result.lengthShortfall;
   if (critical) return { refine: true, reason: 'critical' };
 
   let minor = 0;
@@ -824,21 +811,12 @@ function shouldRefine(result, mode) {
     if (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.20) minor++;
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
+    // evidenceCount >= 4 는 critical로 격상됨(O2). minor 트리거에선 제거.
     if ((result.questionSentenceCount || 0) === 0) minor++;
-    if ((result.dominantHedgeCount || 0) >= 5) minor++;        // 통과 글 실측 4~5회 OK, 5회는 minor 경고
-    // firstPersonCount 게이트 폐기 — 통과 글 4건 실측에서 1인칭 0~1건 다수. 1인칭 강제는 잘못된 가설.
-    if (typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.25) minor++;   // 옛 critical >0.35 흡수
-    if (typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.20) minor++;   // 옛 critical >0.30 흡수
-    // 강등된 항목 (critical → minor)
-    if (result.lastSentenceIsReassurance === true) minor++;
-    if ((result.declarativeDefinitionCount || 0) >= 3) minor++;
-    if ((result.evidenceCount || 0) >= 4) minor++;
-    if ((result.evidencePerParagraphMax || 0) >= 3) minor++;
-    if ((result.noveltyInjectionCount || 0) >= 1) minor++;
-    // C-11 잔존 (학술 SSOT 도입) — enforce 치환 후에도 남으면 사각지대
-    if ((result.endingCommaCount || 0) >= 1) minor++;
-    // 결산 lexicon 4종 누적 — 한 글 3회+ 시 정형성
-    if ((result.conclusionPivotCount || 0) >= 3) minor++;
+    if ((result.dominantHedgeCount || 0) === 3) minor++;
+    if ((result.firstPersonCount || 0) < 2) minor++;
+    if (typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.25) minor++;
+    if (typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.20) minor++;
   }
   return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
 }
@@ -846,7 +824,10 @@ function shouldRefine(result, mode) {
 // 셀프체크 수치를 임계와 대조해 위반된 항목을 사람이 읽을 문장으로 반환
 function collectFailedFields(r, mode) {
   const failed = [];
-  // topNounCounts ≥4 메시지 폐기 — 통과 글 D에 주제어 반복 있어도 통과 (사용자 직관).
+  if (r.topNounCounts && Object.values(r.topNounCounts).some(n => n >= 4)) {
+    const over = Object.entries(r.topNounCounts).filter(([, n]) => n >= 4).map(([k, n]) => `"${k}" ${n}회`).join(', ');
+    failed.push(`주제어 4회 이상 반복(룰 5 어휘 다양화): ${over} — 지시어/유의어로 교체`);
+  }
   if (r.listOfThreeCount >= 1) {
     failed.push(`3개 이상 나열 ${r.listOfThreeCount}건(룰 3 콤마 절 누적 금지, AI 시그너처) — 별도 문장으로 분리하거나 "A부터 C까지" 같은 구간 표현으로`);
   }
@@ -904,16 +885,11 @@ function collectFailedFields(r, mode) {
       const items = Array.isArray(r.noveltyInjectionItems) ? r.noveltyInjectionItems.join(', ') : '';
       failed.push(`입력 글에 없는 신규 사실 ${r.noveltyInjectionCount}건 주입 (절대 금지 직격): ${items} — 사용자 카피킬러 100% 감지 실측의 진범. 학습 데이터에서 끌어온 연도(YYYY)·통계(%)·기관명을 모두 제거하고, 해당 문장을 입력 글에 있는 추상 진술 + 글쓴이 관찰·판단으로 갈아끼워라. "유니레버/대한상공회의소" 같은 외래 고유명사 신규 주입도 금지.`);
     }
-    if ((r.dominantHedgeCount || 0) >= 5) {
-      failed.push(`동일 hedge 표현 "${r.dominantHedgeName || ''}" ${r.dominantHedgeCount}회 반복 — 통과 글 실측 임계 4~5회. 6회 이상은 카피킬러 "기계적 균일성" 시그너처. 같은 hedge는 글 전체에서 5회 이하로 제한하고, 나머지는 다른 형태(~던 것 같습니다 / ~지도 모릅니다 / ~기도 합니다 / ~지 않을까요?)로 분산. 단정 평서로 끝나도 무방.`);
+    if ((r.dominantHedgeCount || 0) >= 3) {
+      failed.push(`동일 hedge 표현 "${r.dominantHedgeName || ''}" ${r.dominantHedgeCount}회 반복 — hedge 풀세트 다양화 효과 무력화로 "기계적 균일성" 시그너처 박힘 (카피킬러 피드백 직격). 같은 hedge는 글 전체에서 2회 이하로 제한하고, 나머지는 다른 형태(~던 것 같습니다 / ~지도 모릅니다 / ~기도 합니다 / ~지 않을까요?)로 분산. 단정 평서로 끝나도 무방.`);
     }
-    // 1인칭 anchor 메시지 폐기 — 통과 글 실측에서 1인칭 0~1건 다수, 강제 X.
-    if ((r.endingCommaCount || 0) >= 1) {
-      failed.push(`연결어미 뒤 쉼표 ${r.endingCommaCount}건 — 한국어 휴머나이저 학술 SSOT 기준 KatFish 분리도 4.84배(인간 4.10% vs AI 19.83%). "~고, / ~며, / ~지만, / ~면서, / ~아서, / ~어서," 패턴은 한국어 AI 글의 가장 강한 단일 시그너처. 해당 쉼표를 빼고 자연스럽게 이어 쓰거나 마침표로 끊어라.`);
-    }
-    if ((r.conclusionPivotCount || 0) >= 3) {
-      const hits = Array.isArray(r.conclusionPivotHits) ? r.conclusionPivotHits.join(', ') : '';
-      failed.push(`결산어 누적 ${r.conclusionPivotCount}건 [${hits}] — LREAD 인간 판독 60→90% 핵심 항목. "결론적으로 / 따라서 / 이를 통해 / 그러므로" 4종 합계 한 글 2회 이하로 제한. 결산 흐름은 "그래서 / 정리하면 / 그러니 / 그 결과" 같은 다양한 연결어로 분산하거나, 결산 자체를 빼고 관찰형 마무리("~는 모습입니다 / ~인 셈입니다")로 교체.`);
+    if ((r.firstPersonCount || 0) < 2) {
+      failed.push(`1인칭 anchor ${r.firstPersonCount || 0}건 (목표 2건+) — 카피킬러 피드백 "글쓴이 관점 부재 / 간접·비인칭 서술 반복" 직격. "제가 ~ 보면서 / 저는 ~ 했을 때 / 저로서는 ~" 같은 1인칭 시점을 글 중간에 2개 이상 자연스럽게 배치. 단, "저는" 4회+ 반복은 금지.`);
     }
   }
   return failed;
@@ -985,10 +961,6 @@ function enforceMechanicalRules(text) {
   for (const { from, to } of MECHANICAL_LEXICON) {
     out = out.replace(from, to);
   }
-
-  // 3) C-11: 연결어미 뒤 쉼표 제거 (한국어 휴머나이저 학술 SSOT — KatFish 4.84배 분리도)
-  // 인간 4.10% vs AI 19.83% — 한국어에서 가장 강한 단일 시그너처. deterministic 치환으로 0%화.
-  out = out.replace(/(고|며|지만|면서|아서|어서)\s*,/g, '$1');
 
   // 정리: 중복 공백, 마침표 앞 공백
   out = out.replace(/ {2,}/g, ' ').replace(/\s+([.,!?])/g, '$1').trim();
