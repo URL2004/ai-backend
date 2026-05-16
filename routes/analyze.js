@@ -707,6 +707,25 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
       result.evidencePerParagraphMax = evidencePerParaMax;
     }
 
+    // ===== C-11: 연결어미 뒤 쉼표 잔존 검출 (학술 SSOT — KatFish 인간 4.10% vs AI 19.83%) =====
+    // enforceMechanicalRules의 deterministic 치환 사각지대 모니터링용.
+    const endingCommaRe = /(고|며|지만|면서|아서|어서)\s*,/g;
+    const endingCommaMatches = text.match(endingCommaRe) || [];
+    result.endingCommaCount = endingCommaMatches.length;
+
+    // ===== 결산 lexicon 4종 누적 (LREAD 인간 판독 60→90% 핵심 항목) =====
+    // "결론적으로 / 따라서 / 이를 통해 / 그러므로" — 한 글 2회 초과 시 결산 정형성.
+    const conclusionLex = ['결론적으로', '따라서', '이를 통해', '그러므로'];
+    let pivotCount = 0;
+    const pivotHits = [];
+    for (const w of conclusionLex) {
+      const cnt = (text.match(new RegExp(w, 'g')) || []).length;
+      if (cnt > 0) pivotHits.push(`${w}×${cnt}`);
+      pivotCount += cnt;
+    }
+    result.conclusionPivotCount = pivotCount;
+    result.conclusionPivotHits = pivotHits;
+
     // ===== 절대 금지 핵심: 입력에 없는 신규 사실 주입 직접 차집합 =====
     // 사용자 카피킬러 100% 감지 실측 — LLM이 학습 데이터에서 연도·통계·기관명을 끌어와 박는 게 진범.
     // evidenceCount 누적만으론 "입력에 원래 있었던 사례"와 "신규 주입"을 구분 못 함 → 입력과 직접 비교.
@@ -816,6 +835,10 @@ function shouldRefine(result, mode) {
     if ((result.evidenceCount || 0) >= 4) minor++;
     if ((result.evidencePerParagraphMax || 0) >= 3) minor++;
     if ((result.noveltyInjectionCount || 0) >= 1) minor++;
+    // C-11 잔존 (학술 SSOT 도입) — enforce 치환 후에도 남으면 사각지대
+    if ((result.endingCommaCount || 0) >= 1) minor++;
+    // 결산 lexicon 4종 누적 — 한 글 3회+ 시 정형성
+    if ((result.conclusionPivotCount || 0) >= 3) minor++;
   }
   return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
 }
@@ -890,6 +913,13 @@ function collectFailedFields(r, mode) {
     if ((r.firstPersonCount || 0) < 2) {
       failed.push(`1인칭 anchor ${r.firstPersonCount || 0}건 (목표 2건+) — 카피킬러 피드백 "글쓴이 관점 부재 / 간접·비인칭 서술 반복" 직격. "제가 ~ 보면서 / 저는 ~ 했을 때 / 저로서는 ~" 같은 1인칭 시점을 글 중간에 2개 이상 자연스럽게 배치. 단, "저는" 4회+ 반복은 금지.`);
     }
+    if ((r.endingCommaCount || 0) >= 1) {
+      failed.push(`연결어미 뒤 쉼표 ${r.endingCommaCount}건 — 한국어 휴머나이저 학술 SSOT 기준 KatFish 분리도 4.84배(인간 4.10% vs AI 19.83%). "~고, / ~며, / ~지만, / ~면서, / ~아서, / ~어서," 패턴은 한국어 AI 글의 가장 강한 단일 시그너처. 해당 쉼표를 빼고 자연스럽게 이어 쓰거나 마침표로 끊어라.`);
+    }
+    if ((r.conclusionPivotCount || 0) >= 3) {
+      const hits = Array.isArray(r.conclusionPivotHits) ? r.conclusionPivotHits.join(', ') : '';
+      failed.push(`결산어 누적 ${r.conclusionPivotCount}건 [${hits}] — LREAD 인간 판독 60→90% 핵심 항목. "결론적으로 / 따라서 / 이를 통해 / 그러므로" 4종 합계 한 글 2회 이하로 제한. 결산 흐름은 "그래서 / 정리하면 / 그러니 / 그 결과" 같은 다양한 연결어로 분산하거나, 결산 자체를 빼고 관찰형 마무리("~는 모습입니다 / ~인 셈입니다")로 교체.`);
+    }
   }
   return failed;
 }
@@ -960,6 +990,10 @@ function enforceMechanicalRules(text) {
   for (const { from, to } of MECHANICAL_LEXICON) {
     out = out.replace(from, to);
   }
+
+  // 3) C-11: 연결어미 뒤 쉼표 제거 (한국어 휴머나이저 학술 SSOT — KatFish 4.84배 분리도)
+  // 인간 4.10% vs AI 19.83% — 한국어에서 가장 강한 단일 시그너처. deterministic 치환으로 0%화.
+  out = out.replace(/(고|며|지만|면서|아서|어서)\s*,/g, '$1');
 
   // 정리: 중복 공백, 마침표 앞 공백
   out = out.replace(/ {2,}/g, ' ').replace(/\s+([.,!?])/g, '$1').trim();
