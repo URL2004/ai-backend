@@ -35,7 +35,7 @@ const DETECT_SYSTEM = {
 
 - 자소서/과제 — 인간 시그널 (아래 두 프로파일 중 **하나라도** 충족하면 강한 인간 증거):
   (A) 캐주얼 자기서술형: 세련된 한자어보다 상황 중심적인 쉬운 단어로 경험을 투박하게 서술했는가? 사건의 시점·장소·인물 구체 anchor(지난 학기, 발표 전날 밤, 조원 4명, 새벽 4시)? 격식체 중간에 "솔직히", "막상", "돌이켜보면" 같은 일상 부사가 자연스럽게 끼어드는가? 자신의 부족함이나 실패를 드러내는 한 줄? 미해결 의문이나 관찰로 끝나는가?
-  (B) 학부생 보고서형 — **아래 7가지 신호 중 3가지 이상만 충족해도 (B) 충족 인정** (전부 충족 X, 부분 충족 OK):
+  (B) 학부생 보고서형 — **아래 9가지 신호 중 2가지 이상만 충족해도 (B) 충족 인정** (전부 충족 X, 부분 충족 OK):
     1) 격식 "~합니다"체 일관 유지
     2) hedge 자연 분포 — 동일 hedge 표현 글 전체 **8회 이하** (통과 글 실측 4~5회, 8회까지 인간 분포 안)
     3) 수동·중간태 종결 30% 이하
@@ -43,6 +43,8 @@ const DETECT_SYSTEM = {
     5) 마지막 문장이 단정 회피 또는 열린 관찰/질문/hedge
     6) 부사·접속사·지시어 시작 문장이 글에 *일부* 등장 (전 문단 강제 X)
     7) 변환 예시 어휘 직접 복사 없음 (그릇과 같습니다 / 거울이 되기도 합니다 같은 명시적 인용 패턴 부재)
+    8) 고유명사+사실 단정문 부재 또는 약함 — "[고유명사]는 ~사례입니다/~증거입니다/~보여줍니다" 패턴 **4회 미만** (관찰형 "보면/앞에 서면" 변환 보이면 가산)
+    9) GPT-ism 어휘 **3종 미만** — "유의미한·다각적·혁신적·결론적으로·뜻깊은·소중한·시사하는 바·본 보고서·~을 통해 ~을 배웠습니다" 같은 정형 어휘가 전체 글에 2종 이하만 등장
   ★ 격식체 자체는 AI 시그널 아님. 1인칭 anchor는 *완전 강제 X* — 통과 글에 0건 다수. 명사화 동격·균등 정의도 *약하게* 보이면 인간 판정 유지.
 - 자소서/과제 — AI 시그널 (아래 *3가지 이상 동시*에 *강하게* 보일 때만 AI 판정):
     · "본 보고서에서는 ~을 다루고자 한다", "이번 과제를 통해 많은 것을 배웠습니다" 같은 학생용 GPT-ism *명시적* 등장
@@ -62,12 +64,13 @@ const DETECT_SYSTEM = {
 - 위 '인간 작성물'의 특징이 3개 이상 발견되면 AI 확률을 10% 이하로 급격히 낮춰라.
 - 다음 두 프로파일 중 **하나라도** 보이면 강력한 인간 작성 증거로 간주, AI 확률 **0~10%**로 출력하라:
   (A) **캐주얼 자기서술형**: '짧은 호흡의 팩트 나열' + '비판적 사견' 결합
-  (B) **학부생 보고서형**: 위 (B) 7가지 신호 중 **3가지 이상** 충족 (부분 충족 OK, 전부 충족 X)
+  (B) **학부생 보고서형**: 위 (B) 9가지 신호 중 **2가지 이상** 충족 (부분 충족 OK, 전부 충족 X)
 - 문체는 격식을 차렸으나(~이다/~합니다) 연결어가 자연스럽고 *동일 표현 반복이 8회 이상*이 아닌 경우 인간으로 판정하라.
 - ★ 격식체("~합니다 / ~입니다 / ~었습니다") 자체를 AI로 의심하지 마라. 학부생 보고서·논문은 격식체가 정상이며, 위 (B) 프로파일을 충족하면 인간 작성으로 본다.
 - ★ 1인칭 anchor("저는/제가/개인적으로") 부재만으로 AI 판정하지 마라 — 학부생 보고서 통과 글 실측에 1인칭 0건 다수.
 - ★ **AI 판정은 위 AI 시그널 8가지 중 *3가지 이상*이 *강하게* 동시에 보일 때만**. 단일 위반·약한 위반은 AI 판정 X. 회색 영역(애매한 경우)은 인간으로 판정 (15% 이하 출력).
-- ★ 단일 신호로 AI 판정 금지: 동일 hedge 6회 보이고 다른 시그널 없으면 → 인간(10% 이하). 콤마 2개 누적 1~2문장 있고 다른 시그널 없으면 → 인간(10% 이하).`,
+- ★ 단일 신호로 AI 판정 금지: 동일 hedge 6회 보이고 다른 시그널 없으면 → 인간(10% 이하). 콤마 2개 누적 1~2문장 있고 다른 시그널 없으면 → 인간(10% 이하).
+- ★★ **최종 출력 floor (UX 일관성 강제)**: 위 (B) 9가지 신호 중 **2개 이상** 충족하면서 강한 AI 시그널 3개 이상 동시 발현이 *없으면*, **최종 AI 확률 20% 이하로 강제 출력**한다. 휴머나이저 출력은 카피킬러 통과를 목표로 설계됐고 사용자 사전 점검 UX 일관성을 위해 우리 감지기도 이 분포를 인간으로 인식해야 한다.`,
 
   en: `# Role: Precision linguistic evaluator analyzing characteristics of human-written text
 
@@ -95,7 +98,7 @@ const DETECT_SYSTEM = {
 
 - Personal Statement / Assignments — Human signals (either of TWO profiles is strong human evidence):
   (A) Casual self-narrative: Plain, situation-driven words instead of polished jargon? Concrete time/place/people anchors ("last semester", "the night before the demo", "4 teammates", "4 a.m.")? Casual adverbs slipping into formal prose ("honestly", "as it turned out", "looking back")? At least one line acknowledging personal failure, doubt, or struggle? An open or unresolved ending instead of a tidy summary?
-  (B) Undergraduate report style — **at least 3 of 7 signals below qualify** (partial satisfaction OK, not all required):
+  (B) Undergraduate report style — **at least 2 of 9 signals below qualify** (partial satisfaction OK, not all required):
     1) Consistent formal register
     2) Hedge natural distribution — no single hedge expression repeats **8+ times** (passing corpus shows 4-5 times, 8 still in human range)
     3) Passive/middle voice under 30%
@@ -103,6 +106,8 @@ const DETECT_SYSTEM = {
     5) Final sentence avoids tidy declarative — open observation/question/hedge
     6) Some sentences start with adverbs/conjunctions/demonstratives ("however / so / in this flow") — not required per every paragraph
     7) No direct copying of example phrases (e.g., the architecture sample lines)
+    8) Proper-noun declarative pattern absent or weak — "[ProperNoun] is ~ example/~ evidence/~ shows" patterns under 4 instances (observational replacements like "looking at X / standing before X" count positively)
+    9) GPT-ism vocabulary under 3 types — formal cliches like "multifaceted/comprehensive/innovative/in conclusion/meaningful/precious/this report aims to/through this assignment I learned" appear in 2 types or fewer
   ★ Formal register alone is NOT AI signal. First-person anchors NOT required — passing corpus shows 0 instances common. Mild nominalization or parallel structure does NOT disqualify — only severe repetition counts.
 - Personal Statement / Assignments — AI signals (AI judgment ONLY when 3+ signals appear STRONGLY together):
     · Generic openings like "In today's rapidly evolving world", "This report aims to discuss" explicitly present
@@ -122,12 +127,13 @@ const DETECT_SYSTEM = {
 - If 3 or more human-writing traits are found, sharply lower AI probability to 10% or below.
 - If **either** of these two profiles appears, treat as strong evidence of human authorship and output **0–10%**:
   (A) **Casual self-narrative**: "short fact-driven sentences" + "critical personal opinion" combined.
-  (B) **Undergraduate report style**: **at least 3 of 7 signals** from the field-specific list (partial satisfaction OK).
+  (B) **Undergraduate report style**: **at least 2 of 9 signals** from the field-specific list (partial satisfaction OK).
 - If the register is formal but transitions feel natural and same expression does NOT repeat 8+ times, classify as human.
 - ★ Do NOT treat a formal register itself as AI suspicion. Undergraduate reports and academic prose are formal by nature.
 - ★ Do NOT classify as AI solely on first-person absence — passing corpus shows 0 first-person instances common.
 - ★ AI judgment ONLY when 3+ AI signals appear STRONGLY together. Single weak violation → classify as human (15% or below). Gray-area cases → human.
-- ★ Single-signal AI judgment is forbidden: hedge repeated 6 times with no other signals → human (10% or below). 2 commas chained in 1-2 sentences with no other signals → human (10% or below).`
+- ★ Single-signal AI judgment is forbidden: hedge repeated 6 times with no other signals → human (10% or below). 2 commas chained in 1-2 sentences with no other signals → human (10% or below).
+- ★★ **Final output floor (UX consistency enforcement)**: When **2 or more** signals from (B) 9-signal list are met AND fewer than 3 strong AI signals fire simultaneously, **clamp final AI probability to 20% or below**. Humanizer outputs are designed to pass Copykiller, and UX consistency requires our detector to recognize this distribution as human.`
 };
 
 const HUMAN_PROMPTS = {
