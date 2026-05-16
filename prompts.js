@@ -25,7 +25,7 @@ const DETECT_SYSTEM = {
 2. 문장 간의 호흡이 일정하고, 단조로운 리듬을 가짐.
 3. '다각적인', '미미한 실정', '효과적인' 같은 모호하고 예의 바른 단어를 남발함.
 4. 감정이나 비판 없이 중립적인 정보 나열에만 집중함.
-5. 과도한 정형성 — 격식체 자체가 아니라 *반복적* 정형성만 감점: 동일 종결어미 4문장 이상 연속, 동일 hedge 표현 3회+ 반복("것 같습니다" 만 4~5회), 한 문장에 콤마 2개 이상 누적(절 줄줄이 잇기), 모든 문단이 같은 길이·같은 구조. ★ 격식 "~합니다"체 자체는 AI 시그널이 아님 — 학부생 보고서·논문은 격식체가 정상.
+5. 과도한 정형성 — 격식체 자체가 아니라 *반복적* 정형성만 감점, 그것도 *극단적* 수준만: 동일 종결어미 **5문장 이상** 연속, 동일 hedge 표현 **9회+** 반복 ("것 같습니다"만 9~10회), 한 문장에 콤마 **3개 이상** 누적(절 줄줄이 잇기) 문장이 *여러 개*, 모든 문단이 *완벽히 동일*한 길이·구조. ★ 격식 "~합니다"체 자체는 AI 시그널이 아님 — 학부생 보고서·논문은 격식체가 정상. 약한 정형성·일반적 패턴은 *인간*으로 판정.
 6. 예측 가능성: 단어의 연결이 지나치게 매끄럽고, 다음 단어가 통계적으로 뻔하게 예측되는 조합.
 7. 동일 문장 패턴 반복: "~은 ~이다", "~는 ~하고 있다" 같은 동일한 문법 구조가 3회 이상 연속으로 반복됨.
 8. 접속사의 등간격 배치: "또한", "그러나", "한편", "특히" 같은 접속사가 마치 규칙처럼 일정한 간격으로 반복 등장함.
@@ -35,8 +35,24 @@ const DETECT_SYSTEM = {
 
 - 자소서/과제 — 인간 시그널 (아래 두 프로파일 중 **하나라도** 충족하면 강한 인간 증거):
   (A) 캐주얼 자기서술형: 세련된 한자어보다 상황 중심적인 쉬운 단어로 경험을 투박하게 서술했는가? 사건의 시점·장소·인물 구체 anchor(지난 학기, 발표 전날 밤, 조원 4명, 새벽 4시)? 격식체 중간에 "솔직히", "막상", "돌이켜보면" 같은 일상 부사가 자연스럽게 끼어드는가? 자신의 부족함이나 실패를 드러내는 한 줄? 미해결 의문이나 관찰로 끝나는가?
-  (B) 학부생 보고서형: 격식 "~합니다"체를 일관 유지하면서도 hedge가 *자연 분포*(추정형 "~인 것 같습니다" / 의문형 "~지 않을까요?" / 부분 단정 "~기도 합니다")로 섞여 있고, **동일 hedge 표현이 글 전체 5회 이하**인가? (사용자 카피킬러 통과 글 실측 — "것 같습니다" 4~5회 박힌 채 0~14% 통과). 능동·주체 명시 동사 비율이 높고 수동·중간태("여겨졌습니다 / 만들어집니다 / 정비되고 있고") 25% 이하? 한 문장 콤마 1개 이하로 절을 누적하지 않음? 마지막 문장이 단정 회피 또는 열린 관찰? **부사·접속사·지시어 시작 문장**(그런데/다만/정말/이 흐름 속에서 등)이 문단마다 자연스럽게 등장? **명사화 동격 구문 "X은 ~을 의미하지 않습니다 / ~이라고 할 수 있습니다 / ~한 것이다" 반복 없음**? **다항목 균등 정의 반복**(각 항목마다 정의→사례→평가) 없음? — 격식체 자체는 AI 시그널 아님. 1인칭("저는/제가/개인적으로")은 강제 X — 통과 글에 0~1건 다수.
-- 자소서/과제 — AI 시그널: "본 보고서에서는 ~을 다루고자 한다", "이번 과제를 통해 많은 것을 배웠습니다", "유익한 시간이었습니다", "~의 중요성을 깨달았습니다" 같은 학생용 GPT-ism이 보이는가? "열정·끊임없는·도전 정신·성장의 발판·소중한 경험" 같은 자소서 GPT-ism이 보이는가? 모든 문단이 같은 길이·같은 호흡으로 정돈되어 있는가? 동일 hedge("것 같습니다" 등) **6회 이상** 반복되는가? 한 문장에 콤마 2개 이상 누적되는가? 수동·중간태 종결이 30%를 넘는가? **명사화 동격 구문**("X은 ~을 의미하지 않습니다 / ~이라고 할 수 있습니다 / ~한 것이다") 3회 이상 반복되는가? **다항목 균등 정의 반복**(각 항목마다 정의→사례→평가 동일 패턴) 보이는가? **모든 문단이 명사 주어로 시작**(부사·접속사·지시어 시작 부재)하는가?
+  (B) 학부생 보고서형 — **아래 7가지 신호 중 3가지 이상만 충족해도 (B) 충족 인정** (전부 충족 X, 부분 충족 OK):
+    1) 격식 "~합니다"체 일관 유지
+    2) hedge 자연 분포 — 동일 hedge 표현 글 전체 **8회 이하** (통과 글 실측 4~5회, 8회까지 인간 분포 안)
+    3) 수동·중간태 종결 30% 이하
+    4) 한 문장 콤마 1~2개 이하 (절 누적 *심한* 경우만 위반)
+    5) 마지막 문장이 단정 회피 또는 열린 관찰/질문/hedge
+    6) 부사·접속사·지시어 시작 문장이 글에 *일부* 등장 (전 문단 강제 X)
+    7) 변환 예시 어휘 직접 복사 없음 (그릇과 같습니다 / 거울이 되기도 합니다 같은 명시적 인용 패턴 부재)
+  ★ 격식체 자체는 AI 시그널 아님. 1인칭 anchor는 *완전 강제 X* — 통과 글에 0건 다수. 명사화 동격·균등 정의도 *약하게* 보이면 인간 판정 유지.
+- 자소서/과제 — AI 시그널 (아래 *3가지 이상 동시*에 *강하게* 보일 때만 AI 판정):
+    · "본 보고서에서는 ~을 다루고자 한다", "이번 과제를 통해 많은 것을 배웠습니다" 같은 학생용 GPT-ism *명시적* 등장
+    · "열정·끊임없는·도전 정신·소중한 경험" 같은 자소서 GPT-ism *3회+* 등장
+    · 모든 문단이 같은 길이·같은 호흡으로 *완벽히* 정돈
+    · 동일 hedge ("것 같습니다" 등) **9회 이상** 반복
+    · 한 문장에 콤마 **3개 이상** 누적되는 문장이 *여러 개*
+    · 수동·중간태 종결이 **40% 초과**
+    · 명사화 동격 구문 ("X은 ~을 의미하지 않습니다 / ~이라고 할 수 있습니다 / ~한 것이다") **5회 이상** 반복
+    · 다항목 균등 정의 반복 (각 항목마다 정의→사례→평가 *완전 동일* 패턴, 3항목+)
 - 블로그 — 인간 시그널: 모바일 가독성을 위한 여백(짧은 문단·빈 줄)이 자연스러운가? "~더라고요", "~죠", "~해요" 같은 친근한 종결어미를 쓰면서도 단조롭지 않은가? 단점이나 아쉬운 점("주차가 헬이었다", "이 가격에 또 갈지는 고민") 같은 솔직한 사견이 들어 있는가? "..." "—" 같은 호흡 표지나 의태어("훅", "확", "슬쩍")가 적절히 섞여 있는가? 깔끔한 결론 대신 열린 마무리인가?
 - 블로그 — AI 시그널: "안녕하세요~", "~에 대해 알아보자", "~에 대해 정리해봤어요" 같은 정형 도입부, "도움이 되셨길 바랍니다" 같은 정형 마무리, "첫째 둘째 셋째" 같은 번호 나열, "완벽한·최고의·반드시 알아야 할" 같은 과장 수식어가 보이는가?
 - 논문 — 인간 시그널: "혁신적·포괄적·필수적" 같은 단어 대신 "한계가 존재함", "해석의 여지가 있음", "통제 변수의 민감도에 따른 변동성" 등 방어적·비판적 어조를 유지하는가? 구체적 수치(p-value, 표본 크기, 오차 범위, 모델 버전, 라이브러리 이름)가 박혀 있는가? 자기 결과의 한계나 예외 케이스를 먼저 언급하는가?
@@ -44,13 +60,14 @@ const DETECT_SYSTEM = {
 
 # [판정 가이드라인]:
 - 위 '인간 작성물'의 특징이 3개 이상 발견되면 AI 확률을 10% 이하로 급격히 낮춰라.
-- 다음 두 프로파일 중 **하나라도** 강하게 보이면 강력한 인간 작성 증거로 간주, AI 확률 **0~15%**로 출력하라:
+- 다음 두 프로파일 중 **하나라도** 보이면 강력한 인간 작성 증거로 간주, AI 확률 **0~10%**로 출력하라:
   (A) **캐주얼 자기서술형**: '짧은 호흡의 팩트 나열' + '비판적 사견' 결합
-  (B) **학부생 보고서형**: 격식 "~합니다"체 + hedge 자연 분포(동일 표현 5회 이하) + 한 문장 콤마 1개 이하 + 수동·중간태 25% 이하 + 마지막 문장 단정 회피 + 부사/접속사/지시어 시작 문장 자연 분포 + 명사화 동격 반복 없음 + 다항목 균등 정의 반복 없음
-- 문체는 격식을 차렸으나(~이다/~합니다) 연결어가 자연스럽고 *동일 표현 반복이 6회 이상*이 아닌 경우 인간으로 판정하라.
+  (B) **학부생 보고서형**: 위 (B) 7가지 신호 중 **3가지 이상** 충족 (부분 충족 OK, 전부 충족 X)
+- 문체는 격식을 차렸으나(~이다/~합니다) 연결어가 자연스럽고 *동일 표현 반복이 8회 이상*이 아닌 경우 인간으로 판정하라.
 - ★ 격식체("~합니다 / ~입니다 / ~었습니다") 자체를 AI로 의심하지 마라. 학부생 보고서·논문은 격식체가 정상이며, 위 (B) 프로파일을 충족하면 인간 작성으로 본다.
 - ★ 1인칭 anchor("저는/제가/개인적으로") 부재만으로 AI 판정하지 마라 — 학부생 보고서 통과 글 실측에 1인칭 0건 다수.
-- AI 특유의 *반복적* 정형성이 **강하게** 보일 경우에만 AI 작성으로 판단하라: (a) 동일 종결 4연속+ (b) 동일 hedge 6회+ (c) 콤마 2개+ 누적 다수 (d) 수동·비인칭 30%+ (e) 명사화 동격 구문 3회+ 반복 (f) 다항목 균등 정의 반복.`,
+- ★ **AI 판정은 위 AI 시그널 8가지 중 *3가지 이상*이 *강하게* 동시에 보일 때만**. 단일 위반·약한 위반은 AI 판정 X. 회색 영역(애매한 경우)은 인간으로 판정 (15% 이하 출력).
+- ★ 단일 신호로 AI 판정 금지: 동일 hedge 6회 보이고 다른 시그널 없으면 → 인간(10% 이하). 콤마 2개 누적 1~2문장 있고 다른 시그널 없으면 → 인간(10% 이하).`,
 
   en: `# Role: Precision linguistic evaluator analyzing characteristics of human-written text
 
@@ -78,8 +95,24 @@ const DETECT_SYSTEM = {
 
 - Personal Statement / Assignments — Human signals (either of TWO profiles is strong human evidence):
   (A) Casual self-narrative: Plain, situation-driven words instead of polished jargon? Concrete time/place/people anchors ("last semester", "the night before the demo", "4 teammates", "4 a.m.")? Casual adverbs slipping into formal prose ("honestly", "as it turned out", "looking back")? At least one line acknowledging personal failure, doubt, or struggle? An open or unresolved ending instead of a tidy summary?
-  (B) Undergraduate report style: A consistent formal register with hedges in *natural distribution* (epistemic "I think" / interrogative "isn't it?" / partial assertion "tends to be") where **no single hedge expression repeats 6+ times** (5 or fewer is fine — passing corpus shows "I think" 4-5 times)? Active voice with explicit subjects dominant, passive/middle voice ("was considered", "is made", "is being shaped") under 25%? At most 1 comma per sentence (no clause chaining)? Final sentence avoids tidy declarative — open observation or hedge close? Sentences starting with adverbs/conjunctions/demonstratives ("however / so / in this flow") appear naturally per paragraph? **No repetition of nominalized appositive constructions** ("X does NOT mean ~ / X can be said to ~ / what matters is ~")? **No repeated parallel definition structure** across multiple items (each item: definition→example→evaluation)? — A formal register alone is NOT an AI signal. First-person ("I / my / personally") is NOT required — passing corpus shows 0-1 instances common.
-- Personal Statement / Assignments — AI signals: Generic openings like "In today's rapidly evolving world", "This report aims to discuss", or "I have learned a lot through this assignment"? Stock phrases like "passionate about", "thrives in challenges", "growth mindset", "valuable experience"? Every paragraph the same length and cadence? Same hedge ("I think" / "it seems") **6+ repetitions**? 2+ commas chained in one sentence? Passive/impersonal endings over 30%? **Nominalized appositive constructions** ("X does NOT mean ~ / X can be said to ~") 3+ repetitions? **Parallel definition structure repeated** across multiple items? Every paragraph starts with a noun-subject (no adverb/conjunction/demonstrative openings)?
+  (B) Undergraduate report style — **at least 3 of 7 signals below qualify** (partial satisfaction OK, not all required):
+    1) Consistent formal register
+    2) Hedge natural distribution — no single hedge expression repeats **8+ times** (passing corpus shows 4-5 times, 8 still in human range)
+    3) Passive/middle voice under 30%
+    4) At most 1-2 commas per sentence (severe clause chaining only counts as violation)
+    5) Final sentence avoids tidy declarative — open observation/question/hedge
+    6) Some sentences start with adverbs/conjunctions/demonstratives ("however / so / in this flow") — not required per every paragraph
+    7) No direct copying of example phrases (e.g., the architecture sample lines)
+  ★ Formal register alone is NOT AI signal. First-person anchors NOT required — passing corpus shows 0 instances common. Mild nominalization or parallel structure does NOT disqualify — only severe repetition counts.
+- Personal Statement / Assignments — AI signals (AI judgment ONLY when 3+ signals appear STRONGLY together):
+    · Generic openings like "In today's rapidly evolving world", "This report aims to discuss" explicitly present
+    · Stock phrases like "passionate about", "thrives in challenges", "growth mindset" 3+ instances
+    · Every paragraph PERFECTLY uniform length and cadence
+    · Same hedge ("I think" / "it seems") **9+ repetitions**
+    · 3+ commas chained in multiple sentences
+    · Passive/impersonal endings over 40%
+    · Nominalized appositive constructions ("X does NOT mean ~ / X can be said to ~") **5+ repetitions**
+    · Parallel definition structure repeated across 3+ items (PERFECTLY identical pattern)
 - Blog — Human signals: Short paragraphs with whitespace for mobile readability? Casual endings without monotony? At least one honest negative ("parking was a nightmare", "not sure I'd pay this again")? Pause markers ("...", "—") and onomatopoeia/colloquialisms scattered? An open ending instead of a clean wrap-up?
 - Blog — AI signals: Boilerplate intros like "Welcome to my blog", "Let's dive into", or wrap-ups like "I hope this was helpful"? Numbered lists ("First, Second, Third")? Hyperbolic modifiers ("perfect", "the best", "must-know")?
 - Academic / Research — Human signals: Defensive hedging ("limitations exist", "open to interpretation", "sensitive to control variables") instead of "innovative/comprehensive/essential"? Concrete numbers (p-values, sample sizes, error margins, library/model versions)? Mentioning limits or edge cases of the author's own results before conclusions?
@@ -87,13 +120,14 @@ const DETECT_SYSTEM = {
 
 # [Scoring Guidelines]:
 - If 3 or more human-writing traits are found, sharply lower AI probability to 10% or below.
-- If **either** of these two profiles strongly appears, treat as strong evidence of human authorship and output **0–15%**:
+- If **either** of these two profiles appears, treat as strong evidence of human authorship and output **0–10%**:
   (A) **Casual self-narrative**: "short fact-driven sentences" + "critical personal opinion" combined.
-  (B) **Undergraduate report style**: formal register + hedge natural distribution (no single hedge 6+ times) + at most 1 comma per sentence + passive voice under 25% + open/hedge final sentence + adverb/conjunction/demonstrative paragraph openings + no nominalized appositive repetition + no parallel definition structure across items.
-- If the register is formal but transitions feel natural and varied without 6+ repetition, classify as human.
-- ★ Do NOT treat a formal register itself as AI suspicion. Undergraduate reports and academic prose are formal by nature; if profile (B) is met, classify as human.
-- ★ Do NOT classify as AI solely on first-person absence — passing undergraduate corpus shows 0-1 first-person instances common.
-- Only classify as AI-written when *repetitive* patterns are **strongly** present: (a) same ending 4+ in a row, (b) same hedge 6+ times, (c) 2+ commas chained in multiple sentences, (d) passive over 30%, (e) nominalized appositive 3+ repetitions, (f) parallel definition structure across items.`
+  (B) **Undergraduate report style**: **at least 3 of 7 signals** from the field-specific list (partial satisfaction OK).
+- If the register is formal but transitions feel natural and same expression does NOT repeat 8+ times, classify as human.
+- ★ Do NOT treat a formal register itself as AI suspicion. Undergraduate reports and academic prose are formal by nature.
+- ★ Do NOT classify as AI solely on first-person absence — passing corpus shows 0 first-person instances common.
+- ★ AI judgment ONLY when 3+ AI signals appear STRONGLY together. Single weak violation → classify as human (15% or below). Gray-area cases → human.
+- ★ Single-signal AI judgment is forbidden: hedge repeated 6 times with no other signals → human (10% or below). 2 commas chained in 1-2 sentences with no other signals → human (10% or below).`
 };
 
 const HUMAN_PROMPTS = {
