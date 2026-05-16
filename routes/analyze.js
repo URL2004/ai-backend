@@ -342,8 +342,9 @@ function getHumanizeToolFor(mode, lang = 'ko') {
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
 //   assignment 모드는 접속사 시작 비율/P3 마지막 문장/주제어 빈도/문단 비율까지 서버에서 추가 실측.
-function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
+function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText) {
   const text = result.outputText || '';
+  const inText = typeof inputText === 'string' ? inputText : '';
 
   // 분량 90% 보장 실측: 출력 길이 / 원문 길이 (공백 제외 기준 통일)
   if (typeof inputCharLen === 'number' && inputCharLen > 0) {
@@ -573,6 +574,34 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       result.hedgeRatio = actualHedge;
     }
 
+    // ===== hedge 균질화 검출: 동일 hedge 표현 글 전체 누적 =====
+    // 사용자 카피킬러 100% 감지 실측 — hedge 풀세트 5종을 제시해도 LLM이 한 표현("것 같습니다")만 반복 sampling.
+    // sameEndingRun(연속) 검증으론 비연속 누적이 빠짐 → 풀세트 다양화가 무력화돼 "기계적 균일성" 시그너처로 직격.
+    const hedgeGroupRes = [
+      { name: '것 같', re: /(?:인|는|던|았던|을) 것 같/g },
+      { name: '고 생각', re: /고 생각(?:합니다|한다|해)/g },
+      { name: '지도 모', re: /지도 모(?:릅니다|른다|르)/g },
+      { name: '수도 있', re: /(?:일|할|될|을) 수(?:도 있| 있)/g },
+      { name: '지 않을까', re: /지 않을까/g }
+    ];
+    let topHedgeName = null, topHedgeCount = 0;
+    for (const g of hedgeGroupRes) {
+      const cnt = (text.match(g.re) || []).length;
+      if (cnt > topHedgeCount) { topHedgeCount = cnt; topHedgeName = g.name; }
+    }
+    if (topHedgeCount > (result.dominantHedgeCount || 0)) {
+      overrides.push(`dominantHedgeCount ${result.dominantHedgeCount || 0} → ${topHedgeCount} ("${topHedgeName}")`);
+      result.dominantHedgeCount = topHedgeCount;
+      result.dominantHedgeName = topHedgeName;
+    }
+
+    // ===== 1인칭 anchor 카운트: 비인칭 LLM 시그너처 검출 =====
+    // 사용자 카피킬러 피드백 2번 직격 — "글쓴이의 관점이 잘 드러나지 않습니다 / 간접·거리감 표현 반복 = AI 패턴".
+    // 1인칭이 부재하면 수동·비인칭 일색이 돼 카피킬러 학습 시그너처와 일치. minor 게이트로 refine 유도(critical은 과교정 위험).
+    const firstPersonRe = /(저는|제가|저도|저의|저 자신|저로서는|개인적으로|제 생각|제 경험|저에게는|저한테는)/g;
+    const firstPersonMatches = text.match(firstPersonRe) || [];
+    result.firstPersonCount = firstPersonMatches.length;
+
     // ===== P0: 맞춤법/띄어쓰기 블랙리스트 =====
     const spellingRules = [
       { re: /것같(습니다|다|네요|아요|은)/, msg: '것같→것 같' },
@@ -608,7 +637,11 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       { re: /기도합니다/, msg: '기도합니다→기도 합니다' },
       { re: /한가지(로|만|에|가|를|도|의)/, msg: '한가지→한 가지' },
       { re: /(일|사실|영향|결과|효과|일상|문제|역할)뿐아니라/, msg: '~뿐아니라→~뿐 아니라' },
-      { re: /(빠질|할|볼|쓸|올|갈|줄|얻을|받을|만날|보낼|읽을)수\s/, msg: '~ㄹ수→~ㄹ 수' }
+      { re: /(빠질|할|볼|쓸|올|갈|줄|얻을|받을|만날|보낼|읽을)수\s/, msg: '~ㄹ수→~ㄹ 수' },
+      // ㄹ수+있/없 결합형 (사용자 글 실측 — "꺼낼수있는/통할수있을지/버틸수없지만")
+      { re: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을|꺼낼|버틸|통할|이길|살아남을|벗어날|치를|배울|이해할|판단할|해결할|찾을)수(있|없)/, msg: '~ㄹ수+있/없→~ㄹ 수 있/없' },
+      // 의존명사 '데' (사용자 글 실측 — "갖추는데 있다")
+      { re: /(지키|만들|살|쓰|배우|찾|보|걸|구하|이해하|받아들이|판단하|결정하|해결하|갖추|버티|통하|이기|적응하|대응하|성장하|살아남)는데\s+(있|의의|의미|도움|기여|초점|중점|목적|이유|핵심|목표|관건|보탬|어려움|걸림돌)/, msg: '~는데 (의존명사)→~는 데' }
     ];
     const spellIssues = spellingRules.filter(r => r.re.test(text)).map(r => r.msg);
     if (spellIssues.length > (result.spellingIssues?.length || 0)) {
@@ -653,6 +686,36 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       overrides.push(`evidencePerParagraphMax ${result.evidencePerParagraphMax} → ${evidencePerParaMax}`);
       result.evidencePerParagraphMax = evidencePerParaMax;
     }
+
+    // ===== 절대 금지 핵심: 입력에 없는 신규 사실 주입 직접 차집합 =====
+    // 사용자 카피킬러 100% 감지 실측 — LLM이 학습 데이터에서 연도·통계·기관명을 끌어와 박는 게 진범.
+    // evidenceCount 누적만으론 "입력에 원래 있었던 사례"와 "신규 주입"을 구분 못 함 → 입력과 직접 비교.
+    if (inText) {
+      const extractYears = (s) => new Set(s.match(/(?:19|20)\d{2}/g) || []);
+      const extractPercents = (s) => new Set(
+        (s.match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).map(p => p.replace(/\s+/g, ''))
+      );
+      // 한글 4자+ 단어 중 기관·기업 접미사로 끝나는 고유명사 (~상공회의소/~연구원/~공사/~협회/~재단/~위원회/~기구/~연구소/~본부/~센터)
+      const orgRe = /[가-힣]{2,}(?:상공회의소|연구원|공사|협회|재단|위원회|기구|연구소|본부|센터|기관)/g;
+      const inYears = extractYears(inText);
+      const inPcts = extractPercents(inText);
+      const outYears = extractYears(text);
+      const outPcts = extractPercents(text);
+      const inOrgs = new Set(inText.match(orgRe) || []);
+      const outOrgs = new Set(text.match(orgRe) || []);
+      const novelty = [];
+      for (const y of outYears) if (!inYears.has(y)) novelty.push(y);
+      for (const p of outPcts) if (!inPcts.has(p)) novelty.push(p);
+      for (const o of outOrgs) if (!inOrgs.has(o)) novelty.push(o);
+      if (novelty.length > 0) {
+        overrides.push(`noveltyInjection ${novelty.join(', ')}`);
+        result.noveltyInjectionCount = novelty.length;
+        result.noveltyInjectionItems = novelty;
+      } else {
+        result.noveltyInjectionCount = 0;
+        result.noveltyInjectionItems = [];
+      }
+    }
   }
 
   // 임계 기준으로 selfCheckPass 재계산. shouldRefine 임계와 정렬해 "달성 가능한 게이트"로 작동.
@@ -679,7 +742,9 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
       || !!result.lengthShortfall
       || (result.evidenceWithoutInterpretation || 0) >= 1
-      || (result.evidencePerParagraphMax || 0) >= 3;
+      || (result.evidencePerParagraphMax || 0) >= 3
+      || (result.noveltyInjectionCount || 0) >= 1
+      || (result.dominantHedgeCount || 0) >= 4;
   }
 
   const recomputedPass = !violations;
@@ -708,6 +773,8 @@ function shouldRefine(result, mode) {
     || (mode === 'assignment' && (result.evidenceCount || 0) >= 4)
     || (mode === 'assignment' && (result.evidenceWithoutInterpretation || 0) >= 1)
     || (mode === 'assignment' && (result.evidencePerParagraphMax || 0) >= 3)
+    || (mode === 'assignment' && (result.noveltyInjectionCount || 0) >= 1)
+    || (mode === 'assignment' && (result.dominantHedgeCount || 0) >= 4)
     || !!result.lengthShortfall;
   if (critical) return { refine: true, reason: 'critical' };
 
@@ -721,6 +788,8 @@ function shouldRefine(result, mode) {
     if ((result.similarLengthRun || 0) >= 4) minor++;
     // evidenceCount >= 4 는 critical로 격상됨(O2). minor 트리거에선 제거.
     if ((result.questionSentenceCount || 0) === 0) minor++;
+    if ((result.dominantHedgeCount || 0) === 3) minor++;
+    if ((result.firstPersonCount || 0) < 2) minor++;
   }
   return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
 }
@@ -779,6 +848,16 @@ function collectFailedFields(r, mode) {
     if ((r.evidenceCount || 0) >= 4) {
       failed.push(`전체 사례 인용 ${r.evidenceCount}건(절대 금지 1항 critical, 권장 0~2건) — 사용자 카피킬러 87% 감지 실측: 사례·정량 사실이 한 글에 4건 이상 누적되면 LLM overconfidence 시그너처로 직접 잡힘. 입력 글에 없는 연도·기관명·통계는 모두 제거. 입력 사례는 추상 진술과 글쓴이 판단으로 갈아끼우고, 꼭 필요한 한두 개만 남겨라.`);
     }
+    if ((r.noveltyInjectionCount || 0) >= 1) {
+      const items = Array.isArray(r.noveltyInjectionItems) ? r.noveltyInjectionItems.join(', ') : '';
+      failed.push(`입력 글에 없는 신규 사실 ${r.noveltyInjectionCount}건 주입 (절대 금지 직격): ${items} — 사용자 카피킬러 100% 감지 실측의 진범. 학습 데이터에서 끌어온 연도(YYYY)·통계(%)·기관명을 모두 제거하고, 해당 문장을 입력 글에 있는 추상 진술 + 글쓴이 관찰·판단으로 갈아끼워라. "유니레버/대한상공회의소" 같은 외래 고유명사 신규 주입도 금지.`);
+    }
+    if ((r.dominantHedgeCount || 0) >= 3) {
+      failed.push(`동일 hedge 표현 "${r.dominantHedgeName || ''}" ${r.dominantHedgeCount}회 반복 — hedge 풀세트 다양화 효과 무력화로 "기계적 균일성" 시그너처 박힘 (카피킬러 피드백 직격). 같은 hedge는 글 전체에서 2회 이하로 제한하고, 나머지는 다른 형태(~던 것 같습니다 / ~지도 모릅니다 / ~기도 합니다 / ~지 않을까요?)로 분산. 단정 평서로 끝나도 무방.`);
+    }
+    if ((r.firstPersonCount || 0) < 2) {
+      failed.push(`1인칭 anchor ${r.firstPersonCount || 0}건 (목표 2건+) — 카피킬러 피드백 "글쓴이 관점 부재 / 간접·비인칭 서술 반복" 직격. "제가 ~ 보면서 / 저는 ~ 했을 때 / 저로서는 ~" 같은 1인칭 시점을 글 중간에 2개 이상 자연스럽게 배치. 단, "저는" 4회+ 반복은 금지.`);
+    }
   }
   return failed;
 }
@@ -827,10 +906,13 @@ const MECHANICAL_LEXICON = [
   { from: /기도합니다/g, to: '기도 합니다' },
   // P0: 의존명사 띄어쓰기 추가 안전망 (사용자 글 실측)
   { from: /(완공|시작|건설|체결|발표|발견|도입|개최|설립)되었을때/g, to: '$1되었을 때' },
-  { from: /(지키|만들|살|쓰|배우|찾|보|걸|구하|이해하|받아들이|판단하|결정하|해결하)는데(\s|[.,!?])/g, to: '$1는 데$2' },
+  { from: /(지키|만들|살|쓰|배우|찾|보|걸|구하|이해하|받아들이|판단하|결정하|해결하|갖추|버티|통하|이기|적응하|대응하|성장하|살아남)는데\s+(있|의의|의미|도움|기여|초점|중점|목적|이유|핵심|목표|관건|보탬|어려움|걸림돌)/g, to: '$1는 데 $2' },
+  { from: /(지키|만들|살|쓰|배우|찾|보|걸|구하|이해하|받아들이|판단하|결정하|해결하|갖추|버티|통하|이기|적응하|대응하|성장하|살아남)는데(\s|[.,!?])/g, to: '$1는 데$2' },
   { from: /한가지(로|만|에|가|를|도|의)/g, to: '한 가지$1' },
   { from: /(일|사실|영향|결과|효과|일상|문제|역할)뿐아니라/g, to: '$1뿐 아니라' },
-  { from: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을)수\s/g, to: '$1 수 ' }
+  { from: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을)수\s/g, to: '$1 수 ' },
+  // ㄹ수+있/없 결합형 (사용자 글 실측 — "꺼낼수있는/통할수있을지/버틸수없지만")
+  { from: /(빠질|할|볼|쓸|올|갈|잘|줄|얻을|받을|만날|보낼|읽을|꺼낼|버틸|통할|이길|살아남을|벗어날|치를|드릴|배울|이해할|판단할|해결할|찾을|쓸)수(있|없)/g, to: '$1 수 $2' }
 ];
 
 function enforceMechanicalRules(text) {
@@ -1136,7 +1218,7 @@ router.post('/analyze', async (req, res) => {
       // Pass C: cleanText + 결정론적 mechanical 후처리 (특수문자, GPT-ism, 3+ 나열).
       // verifyCheckFields가 후처리된 텍스트를 보게 해서 2-pass가 mechanical 위반으론 발동하지 않게 함.
       await applyPassC(result, lang);
-      verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
+      verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, text);
 
       // ★ 2-pass 폴백: critical 위반 1건 또는 minor 2건+일 때만 재호출 (비용 절약)
       const refineDecision = shouldRefine(result, selectedMode);
@@ -1153,7 +1235,7 @@ router.post('/analyze', async (req, res) => {
         });
         result = extractClaudeResult(refineData, humanizeTool.name);
         await applyPassC(result, lang);
-        verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen);
+        verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, text);
         refineUsage = refineData.usage;
         if (result.selfCheckPass === false) {
           console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
