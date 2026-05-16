@@ -655,14 +655,14 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
     }
   }
 
-  // 임계 기준으로 selfCheckPass 재계산 (collectFailedFields와 동일 기준)
+  // 임계 기준으로 selfCheckPass 재계산. shouldRefine 임계와 정렬해 "달성 가능한 게이트"로 작동.
   let violations =
     (result.topNounCounts && Object.values(result.topNounCounts).some(n => n >= 4)) ||
     result.listOfThreeCount >= 1 ||
-    result.consecutiveNounSubjectMax >= 3;
+    result.consecutiveNounSubjectMax >= 4;  // 폐기한 옛 룰 3 잔재 정리, shouldRefine과 일치
     // shortSentenceRatio 위반 폐기 — 룰 2 갱신(평균 40~55자, 단문 *제한*)과 정면 충돌.
     // hedgeRatio 위반 폐기 (사용자 0% 통과 글 hedgeRatio 16.7% — 인간 분포가 5~20%).
-    // 한국어 카피킬러는 hedge·관찰형 종결을 인간 시그너처로 학습. 우리 룰 6 가정 정면 반대.
+    // 한국어 카피킬러는 hedge·관찰형 종결을 인간 시그너처로 학습.
 
   if (mode === 'assignment') {
     violations = violations
@@ -674,7 +674,7 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen) {
       // shortRunWithoutComma·tinySentenceCount·longShortAdjacencyCount 위반 폐기.
       // 룰 2(평균 40~55자, 단문 20~30자) + 룰 3(콤마 절제)과 충돌.
       // 단문 강제는 룰 2 단문 *제한* 방향과 정면 반대.
-      || (result.sameEndingRun || 0) >= 3
+      || (result.sameEndingRun || 0) >= 4    // 프롬프트 룰 1 "4문장 연속 금지"와 일치
       || (result.similarLengthRun || 0) >= 3
       || (Array.isArray(result.spellingIssues) && result.spellingIssues.length > 0)
       || !!result.lengthShortfall
