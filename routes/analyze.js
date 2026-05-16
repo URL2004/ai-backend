@@ -138,37 +138,135 @@ function authErrorMessage(code) {
 // ★ mode별 스키마 분기: assignment만 의문문/접속사/P3/문단비율 필드 강제
 // 함수명에 "Tool"이 남아 있는 건 기존 구조 유지용 — 실제로는 OpenAI strict json_schema로 변환됨
 function buildHumanizeTool(mode, lang = 'ko') {
-  // ★ tool schema 슬림화 (2026-05): 모델 자기보고 측정 필드 13개 + plan 제거.
-  //   이전엔 모델이 카운트 못 하는 측정 필드를 채우게 한 뒤 verifyCheckFields가 다 덮어썼다 (이중 토큰 낭비).
-  //   plan 필드(reasoning before answer)는 GSM8k 추론 task에 효과 검증된 거지 styling task엔 룰 의식 흔적만 박힘.
-  //   서버 verifyCheckFields가 모든 측정을 직접 한다. 모델은 outputText 생성에만 집중.
+  // ★ JSON-CoT 베스트 프랙티스(ACL submission + Pockit/Collin Wilkins 2026): reasoning 필드를 answer 필드 앞에 둠.
+  //   reasoning before answer → +60% 정확도 (GSM8k 측정), 모델이 답을 선커밋한 뒤 사후 합리화하는 우회 차단.
+  //   plan 필드를 outputText 앞에 두어 모델이 글 작성 *전*에 룰 적용 계획을 명시하게 한다.
   const isEn = lang === 'en';
+  const baseProperties = {
+    plan: {
+      type: 'string',
+      description: isEn
+        ? "Mandatory pre-writing plan, written in English. State 1 sentence each for: (1) List every statistic, year, proper noun, and organization name from the input — mark which ones will be kept verbatim, and declare that NO new statistics/years/proper nouns will be introduced. (2) Declare that the example text's vocabulary will NOT be copied; only its tone, structure, and hedge distribution will be imitated. (3) Identify the 3 rules from the system prompt most at risk of being violated for this specific text. (4) If the original follows a stock frame, state the rearrangement direction. (5) **Natural flow first**: declare that information will NOT be compressed into one sentence; natural connectors (so / but / however / in practice / honestly / in the end) will be used between sentences to keep flow smooth. Rule satisfaction must not create a disjointed feel. 5–7 sentences."
+        : '글 작성 전 필수 적용 계획. 다음 5개 항목을 1문장씩 명시: (1) 입력 글에 등장한 통계·연도·고유명사·기관명을 모두 나열하고, 출력에서 그대로 유지할 항목만 표시. 입력에 없는 새 통계·연도·고유명사는 절대 추가하지 않는다고 선언. (2) 위 예시 글의 어휘를 그대로 베끼지 않고 톤·구조·hedge 분포만 모방한다고 선언. (3) 시스템 프롬프트의 P0과 룰 1~5 중 이 글에 가장 위험한 룰 3개 식별. (4) 원문 흐름이 전형 프레임이면 재배치 방향. (5) **자연 흐름 우선**: 정보를 한 문장에 압축하지 않고, 문장 사이를 자연 연결 어구(그래서/그런데/다만/물론/결국)로 매끄럽게 잇는다고 선언. 룰 충족이 단절감을 만들면 안 됨. 5~7문장.'
+    },
+    outputText: {
+      type: 'string',
+      description: isEn
+        ? 'The full rewritten text, written in English. Follow the plan above.'
+        : '변환된 글 전체. plan에 명시한 계획대로 작성.'
+    },
+    summary: {
+      type: 'string',
+      description: isEn
+        ? 'A 2-sentence summary of the transformation, written in English.'
+        : '변환 요약 2문장. 존댓말(~입니다/~합니다체)로 작성.'
+    },
+    detail: {
+      type: 'string',
+      description: isEn
+        ? 'Detailed description of the techniques applied, written in English.'
+        : '적용한 기법 상세. 존댓말(~입니다/~합니다체)로 작성.'
+    },
+    topNounCounts: {
+      type: 'object',
+      description: 'outputText에서 가장 많이 등장하는 주제어(명사) 상위 3개와 횟수. 예: {"배출":2,"정부":1}. 어떤 값도 4 이상이면 룰 7(어휘 다양화) 위반 — 재작성',
+      additionalProperties: { type: 'integer' }
+    },
+    listOfThreeCount: {
+      type: 'integer',
+      description: '콤마/쉼표/"와"/"이나"로 3개 이상 묶은 나열 문장 수. 반드시 0 (룰 4 콤마 절 누적 금지, AI 시그너처)'
+    },
+    consecutiveNounSubjectMax: {
+      type: 'integer',
+      description: '명사 주어로 시작하는 문장의 최대 연속 개수. 2 이하 (룰 3 비명사 시작)'
+    },
+    shortSentenceRatio: {
+      type: 'number',
+      description: '15자 이하 단문 수 / 전체 문장 수. 룰 2(평균 40~55자) 정합 — 단문은 *제한* 방향(문단당 1개 정도). 정보용 측정, 강제 임계 없음.'
+    },
+    hedgeRatio: {
+      type: 'number',
+      description: '추정 어미("~인 것 같다","~라고 생각한다","~던 것 같다") 사용 문장 / 전체 문장. 인간 분포 0.10~0.20 (룰 6 hedge 풀세트). 한국어 카피킬러는 hedge를 인간 시그너처로 학습 — 10~20% 자연스럽게 배치. 너무 낮으면 LLM처럼 단정적, 너무 높으면 과교정.'
+    },
+    selfCheckPass: {
+      type: 'boolean',
+      description: '위 임계를 전부 통과했을 때만 true. 하나라도 위반이면 false'
+    }
+  };
+  const baseRequired = [
+    'plan', 'outputText', 'summary', 'detail',
+    'topNounCounts', 'listOfThreeCount', 'consecutiveNounSubjectMax',
+    'shortSentenceRatio', 'hedgeRatio', 'selfCheckPass'
+  ];
+
+  if (mode === 'assignment') {
+    baseProperties.questionSentenceCount = {
+      type: 'integer',
+      description: '의문문("?"로 끝) 개수. 1~3건 권장 (룰 1 변형 종결 ~까요? + hedge 풀세트 의문문 분산 정합). 0건도 위반 아님.'
+    };
+    baseProperties.lastSentenceIsReassurance = {
+      type: 'boolean',
+      description: '마지막 문장이 재보증/요약/평가 패턴("~할 필요가 있다","~에 달려 있다","~얘기다","정리하자면","결론적으로","알게 됩니다","깨닫게 됩니다")이면 true. false여야 통과 (룰 1 hedge 마무리)'
+    };
+    baseProperties.commaClauseRatio = {
+      type: 'number',
+      description: '쉼표 포함 + 종결/연결어미(다/니다/며/고/어서/아서/면서/는데/지만 등)가 2개 이상인 문장 / 전체. 0.20 이하 (룰 3 콤마 절제 — KatFishNet 측정 한국어 LLM은 인간보다 콤마 2.3배 사용). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.shortRunWithoutComma = {
+      type: 'integer',
+      description: '쉼표 없는 평서문 3연속 구간 개수. 룰 3 콤마 절제 정합 — 정보용 측정, 강제 임계 없음. 서버 실측으로 덮어씀.'
+    };
+    baseProperties.tinySentenceCount = {
+      type: 'integer',
+      description: '8자 이하 초단문 개수(공백 제외). 룰 2(평균 40~55자, 단문 20~30자) 정합 — 정보용 측정, 강제 임계 없음. 서버 실측으로 덮어씀.'
+    };
+    baseProperties.longShortAdjacencyCount = {
+      type: 'integer',
+      description: '40자+ 장문 바로 뒤에 10자 이하 단문이 오는 경우 수. 룰 2 정합 — 정보용 측정, 강제 임계 없음. 서버 실측으로 덮어씀.'
+    };
+    baseProperties.sameEndingRun = {
+      type: 'integer',
+      description: '같은 종결어미(습니다/됩니다/있습니다 등)로 연속 종결된 최대 문장 수. 2 이하 (룰 1 종결어미 다양화 — 4문장 연속 금지). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.similarLengthRun = {
+      type: 'integer',
+      description: '한 문단 내 ±5자 이내 문장 길이 연속 최대치(15자 이상 문장만 판정). 2 이하 (룰 2 문장 길이). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.spellingIssues = {
+      type: 'array',
+      description: '맞춤법/띄어쓰기 블랙리스트 적중 목록. 빈 배열이어야 통과 (P0). 서버 실측으로 덮어씀.',
+      items: { type: 'string' }
+    };
+    baseProperties.evidenceCount = {
+      type: 'integer',
+      description: '사례·인용 문장 수. "[연도(YYYY)+주체+수치/기업명]" 형태로 객관 사실을 인용한 문장 개수. 서버 실측으로 덮어씀.'
+    };
+    baseProperties.evidenceWithoutInterpretation = {
+      type: 'integer',
+      description: '사례 문장 직후 글쓴이 해석/판단/의문 문장이 따라붙지 않은 케이스 수. 0이어야 통과 (절대 금지 1항 안전망). 서버 실측으로 덮어씀.'
+    };
+    baseProperties.evidencePerParagraphMax = {
+      type: 'integer',
+      description: '한 단락 안에 등장하는 사례 인용 최대 개수. 2 이하 (절대 금지 1항 안전망). 서버 실측으로 덮어씀.'
+    };
+    baseRequired.push(
+      'questionSentenceCount',
+      'lastSentenceIsReassurance',
+      'commaClauseRatio', 'shortRunWithoutComma',
+      'tinySentenceCount', 'longShortAdjacencyCount',
+      'sameEndingRun', 'similarLengthRun', 'spellingIssues',
+      'evidenceCount', 'evidenceWithoutInterpretation',
+      'evidencePerParagraphMax'
+    );
+  }
+
   return {
     name: 'return_humanized_result',
-    description: 'Return the rewritten text. Server measures all signature fields after; you do not need to count anything.',
+    description: '재작성된 텍스트와 셀프체크 수치를 반환한다. 수치는 outputText를 실제로 세어 채운다 (추정 금지).',
     input_schema: {
       type: 'object',
-      properties: {
-        outputText: {
-          type: 'string',
-          description: isEn
-            ? 'The full rewritten text. Apply the system prompt rules silently — do not output rule analysis.'
-            : '변환된 글 전체. 시스템 프롬프트 룰을 따라 작성. 룰 분석·계획·검증 메타텍스트 출력 금지.'
-        },
-        summary: {
-          type: 'string',
-          description: isEn
-            ? 'A 2-sentence summary of the transformation, written in English.'
-            : '변환 요약 2문장. 존댓말(~입니다/~합니다체)로 작성.'
-        },
-        detail: {
-          type: 'string',
-          description: isEn
-            ? 'Detailed description of the techniques applied, written in English.'
-            : '적용한 기법 상세. 존댓말(~입니다/~합니다체)로 작성.'
-        }
-      },
-      required: ['outputText', 'summary', 'detail']
+      properties: baseProperties,
+      required: baseRequired
     }
   };
 }
@@ -500,59 +598,12 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
       result.dominantHedgeName = topHedgeName;
     }
 
-    // ===== S2 (무하유 공식): 단락 단위 1인칭 anchor =====
-    // 카피킬러가 4~5문장 단락을 이진분류 단위로 사용. 단락 내 1인칭이 0개면 그 단락 통째 빨강.
-    // 글 전체 카운트는 부족 — 단락별로 최소 1건 강제. (출처: manual.muhayu.com/gpt-killer-labs)
+    // ===== 1인칭 anchor 카운트: 비인칭 LLM 시그너처 검출 =====
+    // 사용자 카피킬러 피드백 2번 직격 — "글쓴이의 관점이 잘 드러나지 않습니다 / 간접·거리감 표현 반복 = AI 패턴".
+    // 1인칭이 부재하면 수동·비인칭 일색이 돼 카피킬러 학습 시그너처와 일치. minor 게이트로 refine 유도(critical은 과교정 위험).
     const firstPersonRe = /(저는|제가|저도|저의|저 자신|저로서는|개인적으로|제 생각|제 경험|저에게는|저한테는)/g;
     const firstPersonMatches = text.match(firstPersonRe) || [];
     result.firstPersonCount = firstPersonMatches.length;
-    // 단락 단위 측정
-    const paragraphsForFP = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
-    let paragraphsWithoutFP = 0;
-    let minFPPerParagraph = Infinity;
-    for (const p of paragraphsForFP) {
-      const cnt = (p.match(firstPersonRe) || []).length;
-      if (cnt === 0) paragraphsWithoutFP++;
-      if (cnt < minFPPerParagraph) minFPPerParagraph = cnt;
-    }
-    result.paragraphsWithoutFirstPerson = paragraphsWithoutFP;
-    result.minFirstPersonPerParagraph = minFPPerParagraph === Infinity ? 0 : minFPPerParagraph;
-
-    // ===== S5 (무하유 공식): 단락 단위 주제어 반복 =====
-    // S5 = "같은 키워드·내용을 글 전반에서 반복 확대". 단락 안에서 같은 명사가 3회+면 단락 시그너처.
-    const noun3PlusRe = /[가-힣]{2,4}/g;
-    let maxNounPerPara = 0;
-    let worstNounInPara = null;
-    for (const p of paragraphsForFP) {
-      const tokens = (p.match(noun3PlusRe) || [])
-        .map(t => t.replace(/(은|는|이|가|을|를|에|의|와|과|도|만|로|으로|에서|에게|부터|까지)$/, ''))
-        .filter(t => t.length >= 2);
-      const freq = {};
-      for (const t of tokens) freq[t] = (freq[t] || 0) + 1;
-      for (const [w, c] of Object.entries(freq)) {
-        if (c > maxNounPerPara) { maxNounPerPara = c; worstNounInPara = w; }
-      }
-    }
-    result.maxNounRepetitionPerParagraph = maxNounPerPara;
-    result.worstRepeatedNounInParagraph = worstNounInPara;
-
-    // ===== S4 (무하유 공식): 단정문 비율 =====
-    // S4 = "중립성 편향, 단정적/확신 표현 부족". hedge로만 일관하면 회피 시그너처.
-    // 인간은 hedge와 단정을 섞어 씀. 단정문 30%+ 강제.
-    // 단정문 = ~합니다/~입니다/~한다/~봅니다 등 종결 + hedge 패턴 없음 + 의문문 아님.
-    const hedgeForAssertive = /(인 것 같|는 것 같|고 생각|던 것 같|았던 것 같|았을지도|지도 모|일 수도 있|인 듯|지 않을까|기도 합)/;
-    let assertiveCount = 0;
-    for (const s of sentences) {
-      const t = s.trim();
-      if (/[?？]$/.test(t)) continue;            // 의문문 제외
-      if (hedgeForAssertive.test(t)) continue;   // hedge 문장 제외
-      if (/[다까요]\.?$|입니다\.?$|합니다\.?$|봅니다\.?$|봅니다[.!]?$/.test(t)) {
-        assertiveCount++;
-      }
-    }
-    const assertiveRatio = sentences.length > 0 ? assertiveCount / sentences.length : 0;
-    result.assertiveSentenceRatio = Number(assertiveRatio.toFixed(3));
-    result.assertiveSentenceCount = assertiveCount;
 
     // ===== 수동·비인칭 동사 비율 검출 (카피킬러 피드백 3번 직격) =====
     // "수동태, 비인칭 구조 중심 → 글쓴이 관점 부재 = AI 패턴" 직격.
@@ -788,12 +839,6 @@ function shouldRefine(result, mode) {
     if ((result.endingCommaCount || 0) >= 1) minor++;
     // 결산 lexicon 4종 누적 — 한 글 3회+ 시 정형성
     if ((result.conclusionPivotCount || 0) >= 3) minor++;
-    // S2 (무하유 공식): 단락 1인칭 anchor 부재 — 4~5문장 단락 통째 빨강
-    if ((result.paragraphsWithoutFirstPerson || 0) >= 1) minor++;
-    // S5 (무하유 공식): 단락 내 같은 명사 3회+ 반복
-    if ((result.maxNounRepetitionPerParagraph || 0) >= 3) minor++;
-    // S4 (무하유 공식): 단정문 30% 미만 = 회피 시그너처
-    if (typeof result.assertiveSentenceRatio === 'number' && result.assertiveSentenceRatio < 0.30) minor++;
   }
   return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
 }
@@ -874,15 +919,6 @@ function collectFailedFields(r, mode) {
     if ((r.conclusionPivotCount || 0) >= 3) {
       const hits = Array.isArray(r.conclusionPivotHits) ? r.conclusionPivotHits.join(', ') : '';
       failed.push(`결산어 누적 ${r.conclusionPivotCount}건 [${hits}] — LREAD 인간 판독 60→90% 핵심 항목. "결론적으로 / 따라서 / 이를 통해 / 그러므로" 4종 합계 한 글 2회 이하로 제한. 결산 흐름은 "그래서 / 정리하면 / 그러니 / 그 결과" 같은 다양한 연결어로 분산하거나, 결산 자체를 빼고 관찰형 마무리("~는 모습입니다 / ~인 셈입니다")로 교체.`);
-    }
-    if ((r.paragraphsWithoutFirstPerson || 0) >= 1) {
-      failed.push(`1인칭 anchor 없는 단락 ${r.paragraphsWithoutFirstPerson}개 (무하유 공식 S2 시그너처 직격) — 카피킬러는 4~5문장 단락 단위로 이진분류하므로 1인칭 anchor 없는 단락은 통째 빨강 처리됨. 모든 단락에 "제가 / 저는 / 저로서는 / 개인적으로" 같은 표현 최소 1건 자연 배치. 글 전체 카운트만 채우면 안 됨.`);
-    }
-    if ((r.maxNounRepetitionPerParagraph || 0) >= 3) {
-      failed.push(`단락 내 명사 반복 — "${r.worstRepeatedNounInParagraph || ''}" ${r.maxNounRepetitionPerParagraph}회 (무하유 공식 S5 시그너처 직격: "같은 키워드·내용 글 전반 반복 확대 = AI 패턴"). 한 단락 안에서 같은 명사 2회 이하로 제한. 동의어 / 지시 대명사("이런 / 그런 / 해당") / 상위어로 분산.`);
-    }
-    if (typeof r.assertiveSentenceRatio === 'number' && r.assertiveSentenceRatio < 0.30) {
-      failed.push(`단정문 비율 ${(r.assertiveSentenceRatio * 100).toFixed(0)}% (목표 30%+, 무하유 공식 S4 시그너처: "중립성 편향, 단정·확신 표현 부족 = AI 패턴"). hedge("것 같습니다 / 지도 모릅니다")만으로 일관하면 회피 시그너처. 3문장에 1번은 강한 단정 ("~합니다 / ~입니다 / ~한다고 봅니다") 필요. hedge와 단정 *섞어* 쓰기.`);
     }
   }
   return failed;
