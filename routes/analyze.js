@@ -582,7 +582,10 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
       { name: '고 생각', re: /고 생각(?:합니다|한다|해)/g },
       { name: '지도 모', re: /지도 모(?:릅니다|른다|르)/g },
       { name: '수도 있', re: /(?:일|할|될|을) 수(?:도 있| 있)/g },
-      { name: '지 않을까', re: /지 않을까/g }
+      { name: '지 않을까', re: /지 않을까/g },
+      // "~기도 합니다" 그룹 — 사용자 실측: "것 같"을 줄였더니 LLM이 이쪽으로 옮겨 재균질화.
+      // 앞에 한글 1자+ 필수로 두어 단독 "기도(prayer)"는 제외 ("흔들리기도 합니다" 같은 보조사 결합만 잡힘).
+      { name: '기도 합', re: /[가-힣]+기도\s+(?:합니다|했습니다|한다|하고|하며|하기도|함)/g }
     ];
     let topHedgeName = null, topHedgeCount = 0;
     for (const g of hedgeGroupRes) {
@@ -601,6 +604,23 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
     const firstPersonRe = /(저는|제가|저도|저의|저 자신|저로서는|개인적으로|제 생각|제 경험|저에게는|저한테는)/g;
     const firstPersonMatches = text.match(firstPersonRe) || [];
     result.firstPersonCount = firstPersonMatches.length;
+
+    // ===== 수동·비인칭 동사 비율 검출 (카피킬러 피드백 3번 직격) =====
+    // "수동태, 비인칭 구조 중심 → 글쓴이 관점 부재 = AI 패턴" 직격.
+    // 1인칭이 들어가도 본문 동사 대부분이 수동·중간태면 비인칭 시그너처 박힘 (사용자 실측 — 1인칭 3회였는데도 100% 감지).
+    const passiveRe = /(되었습니다|됐습니다|되어 있|되고 있|졌습니다|져 있|지고 있|혔습니다|혀 있|만들어졌|만들어집|만들어지는|받게 됩니다|받게 될|받게 된|여겨졌|여겨집|여겨지는|이루어졌|이루어집|이루어지는|확인됩|확인되었|드러납|드러난|보여집|보여졌|평가받게|평가받는|움직이고 있|이어지고 있|이어집니다|진행되고 있|정비되고 있|놓여 있|걸쳐 있|담겨 있|뒤집혔|뒤집힌|이끌리|밀려|치우치|기울)/;
+    const passiveCount = sentences.filter(s => passiveRe.test(s)).length;
+    const passiveRatio = sentences.length > 0 ? passiveCount / sentences.length : 0;
+    result.passiveVoiceRatio = Number(passiveRatio.toFixed(3));
+    result.passiveVoiceCount = passiveCount;
+
+    // ===== 60자+ 장문 비율 검출 (카피킬러 피드백 1번 "압축·단절" 직격) =====
+    // 사용자 실측: 60자+ 장문이 한 글 전체의 25%를 넘으면 "한 문단에 정보 압축, 문장 간 단절" 시그너처 박힘.
+    // 콤마 누적 장문이 자주 동반됨 → commaClauseRatio와 묶어서 판단.
+    const longCount = sentences.filter(s => charLen(s) >= 60).length;
+    const longRatio = sentences.length > 0 ? longCount / sentences.length : 0;
+    result.longSentenceRatio = Number(longRatio.toFixed(3));
+    result.longSentenceCount = longCount;
 
     // ===== P0: 맞춤법/띄어쓰기 블랙리스트 =====
     const spellingRules = [
@@ -733,7 +753,9 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
       || (result.declarativeDefinitionCount || 0) >= 3
       || (result.evidenceCount || 0) >= 4
       || !!result.paragraphCountMismatch
-      || (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.20)
+      || (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.15)
+      || (typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.35)
+      || (typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.30)
       // shortRunWithoutComma·tinySentenceCount·longShortAdjacencyCount 위반 폐기.
       // 룰 2(평균 40~55자, 단문 20~30자) + 룰 3(콤마 절제)과 충돌.
       // 단문 강제는 룰 2 단문 *제한* 방향과 정면 반대.
@@ -775,6 +797,9 @@ function shouldRefine(result, mode) {
     || (mode === 'assignment' && (result.evidencePerParagraphMax || 0) >= 3)
     || (mode === 'assignment' && (result.noveltyInjectionCount || 0) >= 1)
     || (mode === 'assignment' && (result.dominantHedgeCount || 0) >= 4)
+    || (mode === 'assignment' && typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.35)
+    || (mode === 'assignment' && typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.30)
+    || (mode === 'assignment' && typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.25)
     || !!result.lengthShortfall;
   if (critical) return { refine: true, reason: 'critical' };
 
@@ -783,13 +808,15 @@ function shouldRefine(result, mode) {
   if (typeof result.hedgeRatio === 'number' && (result.hedgeRatio < 0.07 || result.hedgeRatio > 0.22)) minor++;
   if ((result.consecutiveNounSubjectMax || 0) >= 4) minor++;
   if (mode === 'assignment') {
-    if (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.30) minor++;
+    if (typeof result.commaClauseRatio === 'number' && result.commaClauseRatio > 0.20) minor++;
     if ((result.sameEndingRun || 0) >= 4) minor++;
     if ((result.similarLengthRun || 0) >= 4) minor++;
     // evidenceCount >= 4 는 critical로 격상됨(O2). minor 트리거에선 제거.
     if ((result.questionSentenceCount || 0) === 0) minor++;
     if ((result.dominantHedgeCount || 0) === 3) minor++;
     if ((result.firstPersonCount || 0) < 2) minor++;
+    if (typeof result.passiveVoiceRatio === 'number' && result.passiveVoiceRatio > 0.25) minor++;
+    if (typeof result.longSentenceRatio === 'number' && result.longSentenceRatio > 0.20) minor++;
   }
   return { refine: minor >= 5, reason: minor >= 5 ? `minor x${minor}` : 'pass' };
 }
@@ -824,8 +851,14 @@ function collectFailedFields(r, mode) {
     if (r.paragraphCountMismatch) {
       failed.push(`문단 수 불일치: 입력 ${r.paragraphCountMismatch.input}문단 → 출력 ${r.paragraphCountMismatch.output}문단. 원문의 문단 수를 그대로 유지하라. \\n\\n을 추가/삭제하지 말 것.`);
     }
-    if (typeof r.commaClauseRatio === 'number' && r.commaClauseRatio > 0.20) {
-      failed.push(`쉼표 복문 비율 ${(r.commaClauseRatio * 100).toFixed(0)}%(룰 3 콤마 절제, 목표 20% 이하 — KatFishNet 측정 한국어 LLM 시그너처 직격) — 쉼표로 이어붙인 긴 문장을 마침표로 끊어 독립 문장으로 재배치. 한 문장 콤마 1개 이하 권장.`);
+    if (typeof r.commaClauseRatio === 'number' && r.commaClauseRatio > 0.15) {
+      failed.push(`쉼표 복문 비율 ${(r.commaClauseRatio * 100).toFixed(0)}%(룰 3 콤마 절제, 목표 15% 이하 — KatFishNet 측정 한국어 LLM 시그너처 직격) — 쉼표로 이어붙인 긴 문장을 마침표로 끊어 독립 문장으로 재배치. 한 문장 콤마 1개 이하 권장. "A하고, B하며, C합니다" 식으로 절 3개 이어붙이면 카피킬러 "압축·단절" 시그너처 직격.`);
+    }
+    if (typeof r.passiveVoiceRatio === 'number' && r.passiveVoiceRatio > 0.25) {
+      failed.push(`수동·비인칭 동사 ${(r.passiveVoiceRatio * 100).toFixed(0)}%(룰 7 수동태 회피, 목표 25% 이하) — 카피킬러 피드백 "수동태·비인칭 구조 중심 → 글쓴이 관점 부재" 직격. "여겨졌습니다 / 만들어집니다 / 뒤집혔습니다 / 정비되고 있고 / 이어지고 있습니다 / 평가받게 될" 같은 수동·중간태를 능동으로 전환. "기업이 ~을 한다 / 저는 ~을 본다 / 사람들은 ~을 고른다" 식의 명확한 주체+능동 동사로 절반 이상 교체.`);
+    }
+    if (typeof r.longSentenceRatio === 'number' && r.longSentenceRatio > 0.20) {
+      failed.push(`60자+ 장문 비율 ${(r.longSentenceRatio * 100).toFixed(0)}%(룰 2 문장 길이, 목표 20% 이하) — 카피킬러 피드백 "지나친 요약·압축 서술 → 문장 간 단절" 직격. 60자+ 문장은 글 전체에서 25% 이내로. 콤마로 절을 이어 60자+로 늘이지 말고, 마침표로 30~50자 독립 문장 2~3개로 분할.`);
     }
     if ((r.sameEndingRun || 0) >= 3) {
       failed.push(`동일 종결어미 ${r.sameEndingRun}연속(룰 1 종결어미 다양화 — 4문장 연속 금지) — 3번째 문장을 변형 종결(~까요? / ~던 것 같습니다 / ~인지도 모릅니다 / ~기도 합니다)로 교체`);
