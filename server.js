@@ -27,5 +27,6 @@ app.use('/', require('./routes/analyze'));
 app.use('/', require('./routes/kakaoLogin'));
 app.use('/', require('./routes/payment'));
 app.use('/', require('./routes/subscription'));
+app.use('/', require('./routes/coupon'));
 
 app.listen(process.env.PORT || 3000, () => console.log('서버 시작!'));

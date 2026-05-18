@@ -44,4 +44,18 @@ const dailyLimiter = rateLimit({
   message: { error: '일일 사용량을 초과했습니다. 내일 다시 시도해주세요.' },
 });
 
-module.exports = { admin, db, corsMiddleware, limiter, dailyLimiter };
+// 관리자 UID 화이트리스트 (프론트엔드 ADMIN_ROLES와 동일하게 유지)
+const ADMIN_UIDS = ['nC90IyjgaIZ8Z0JTABMTiyQHF9g1', 'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm2', 'upyxtXMQEgQXfqTUWPrf6QS9EqE2'];
+
+// Firebase ID Token 검증 헬퍼 (실패 시 null)
+async function verifyToken(idToken) {
+  if (!idToken) return null;
+  try {
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    return decoded.uid;
+  } catch (e) {
+    return null;
+  }
+}
+
+module.exports = { admin, db, corsMiddleware, limiter, dailyLimiter, ADMIN_UIDS, verifyToken };

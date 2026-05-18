@@ -1,7 +1,7 @@
 // [결제] 토스페이먼츠 결제 확인 + Firebase 크레딧 지급 처리
 
 const express = require('express');
-const { admin, db } = require('../config');
+const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
 
 const router = express.Router();
 
@@ -110,20 +110,7 @@ router.post('/confirm-payment', async (req, res) => {
 });
 
 // --- 환불 시스템 ---
-
-// 관리자 UID 목록 (프론트엔드 ADMIN_ROLES와 동일하게 유지)
-const ADMIN_UIDS = ['nC90IyjgaIZ8Z0JTABMTiyQHF9g1', 'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm2', 'upyxtXMQEgQXfqTUWPrf6QS9EqE2'];
-
-// Firebase ID Token 검증 헬퍼
-async function verifyToken(idToken) {
-  if (!idToken) return null;
-  try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    return decoded.uid;
-  } catch (e) {
-    return null;
-  }
-}
+// ADMIN_UIDS / verifyToken은 config.js에서 import (coupon.js와 단일 진실 원천 공유)
 
 // 컬렉션 분기 헬퍼
 function getOrderRef(kind, orderId) {
