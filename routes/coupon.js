@@ -430,4 +430,45 @@ router.post('/admin/void-coupons', async (req, res) => {
   }
 });
 
+// ───────────────────────────────────────────
+// 관리자: 배치 기록 영구 삭제 (잔여 미사용 0일 때만)
+// ───────────────────────────────────────────
+router.post('/admin/delete-coupon-batch', async (req, res) => {
+  const { idToken, batchId } = req.body || {};
+
+  const adminUid = await verifyToken(idToken);
+  if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
+  if (!ADMIN_UIDS.includes(adminUid)) {
+    return res.status(403).json({ error: '관리자 권한이 없어요.' });
+  }
+  if (!batchId || typeof batchId !== 'string') {
+    return res.status(400).json({ error: '배치 ID가 필요해요.' });
+  }
+
+  const batchRef = db.collection('couponBatches').doc(batchId);
+  try {
+    const deletedCount = await db.runTransaction(async (t) => {
+      const batchSnap = await t.get(batchRef);
+      if (!batchSnap.exists) {
+        throw Object.assign(new Error('배치를 찾을 수 없어요.'), { status: 404 });
+      }
+      const codesQ = db.collection('couponCodes').where('batchId', '==', batchId);
+      const codesSnap = await t.get(codesQ);
+      const hasUnused = codesSnap.docs.some(d => d.data().status === 'unused');
+      if (hasUnused) {
+        throw Object.assign(new Error('미사용 쿠폰이 남아있어 삭제할 수 없어요. 먼저 배치 무효화를 해주세요.'), { status: 409 });
+      }
+      codesSnap.docs.forEach(d => t.delete(d.ref));
+      t.delete(batchRef);
+      return codesSnap.size;
+    });
+    console.log(`✅ 배치 기록 삭제: admin=${adminUid}, batchId=${batchId}, codes=${deletedCount}개`);
+    res.json({ ok: true, deletedCodes: deletedCount });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    console.error('❌ 배치 기록 삭제 실패:', err);
+    res.status(500).json({ error: '배치 삭제 중 오류가 발생했어요.' });
+  }
+});
+
 module.exports = router;
