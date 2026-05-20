@@ -471,4 +471,55 @@ router.post('/admin/delete-coupon-batch', async (req, res) => {
   }
 });
 
+// ───────────────────────────────────────────
+// 관리자: 배치 만료일 일괄 변경 (부활 / 무기한 전환 허용)
+// ───────────────────────────────────────────
+router.post('/admin/update-batch-expiry', async (req, res) => {
+  const { idToken, batchId, expiresAt } = req.body || {};
+
+  const adminUid = await verifyToken(idToken);
+  if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
+  if (!ADMIN_UIDS.includes(adminUid)) {
+    return res.status(403).json({ error: '관리자 권한이 없어요.' });
+  }
+  if (!batchId || typeof batchId !== 'string') {
+    return res.status(400).json({ error: '배치 ID가 필요해요.' });
+  }
+
+  // expiresAt 파싱: null/빈값 = 무기한, 미래 날짜만 허용
+  let expiresAtTs = null;
+  if (expiresAt) {
+    const t = new Date(expiresAt);
+    if (Number.isNaN(t.getTime())) {
+      return res.status(400).json({ error: '만료일 형식이 올바르지 않아요.' });
+    }
+    if (t.getTime() < Date.now()) {
+      return res.status(400).json({ error: '새 만료일은 현재 이후여야 해요.' });
+    }
+    expiresAtTs = admin.firestore.Timestamp.fromDate(t);
+  }
+
+  const batchRef = db.collection('couponBatches').doc(batchId);
+  try {
+    const updated = await db.runTransaction(async (t) => {
+      const batchSnap = await t.get(batchRef);
+      if (!batchSnap.exists) {
+        throw Object.assign(new Error('배치를 찾을 수 없어요.'), { status: 404 });
+      }
+      const codesQ = db.collection('couponCodes').where('batchId', '==', batchId);
+      const codesSnap = await t.get(codesQ);
+      t.update(batchRef, { expiresAt: expiresAtTs });
+      codesSnap.docs.forEach(d => t.update(d.ref, { expiresAt: expiresAtTs }));
+      return codesSnap.size;
+    });
+    const expStr = expiresAtTs ? new Date(expiresAtTs.toMillis()).toISOString() : '무기한';
+    console.log(`✅ 배치 만료일 변경: admin=${adminUid}, batchId=${batchId}, expiresAt=${expStr}, codes=${updated}`);
+    res.json({ ok: true, updatedCodes: updated, expiresAt: expiresAtTs ? expiresAtTs.toMillis() : null });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    console.error('❌ 배치 만료일 변경 실패:', err);
+    res.status(500).json({ error: '만료일 변경 중 오류가 발생했어요.' });
+  }
+});
+
 module.exports = router;
